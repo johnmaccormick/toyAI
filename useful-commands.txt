@@ -1,0 +1,11 @@
+to activate from git bash:
+
+source venv\Scripts\activate
+
+from cmd prompt:
+
+venv\Scripts\activate.bat
+
+
+
+
