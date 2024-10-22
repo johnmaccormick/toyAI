@@ -1,12 +1,17 @@
 import lightning as L  # Lightning makes it easier to write, optimize and scale our code
 # We'll store our data in DataLoaders
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import Dataset, TensorDataset, DataLoader
 from torch.optim import Adam  # We will use the Adam optimizer, which is, essentially,
 import torch.nn as nn  # torch.nn gives us nn.Module(), nn.Embedding() and nn.Linear()
 import torch  # torch let's us create tensors and also provides helper functions
 import torch.nn.functional as F  # This gives us the softmax() and argmax()
-verbose = True
+import time
+
+verbose = False
 max_length = 6  # max tokens -- i.e. context window
+learning_rate = 0.1
+num_epochs = 30
+batch_size = 1
 
 # a slightly less stochastic version of stochastic gradient descent.
 
@@ -16,39 +21,62 @@ token_to_id = {'what': 0,
                'statquest': 2,
                'awesome': 3,
                '<EOS>': 4,  # <EOS> = end of sequence
-               'apple': 5,
-               'banana': 6,
-               'grape': 7,
-               'pear': 8
+               #    'apple': 5,
+               #    'banana': 6,
+               #    'grape': 7,
+               #    'pear': 8,
+               #    'fruit': 9
                }
 id_to_token = dict(map(reversed, token_to_id.items()))
 
-inputs = torch.tensor([[token_to_id["what"],  # input #1: what is statquest <EOS> awesome
-                        token_to_id["is"],
-                        token_to_id["statquest"],
-                        token_to_id["<EOS>"],
-                        token_to_id["awesome"]],
 
-                       [token_to_id["statquest"],  # input #2: statquest is what <EOS> awesome
-                        token_to_id["is"],
-                        token_to_id["what"],
-                        token_to_id["<EOS>"],
-                        token_to_id["awesome"]]])
+def input_to_IDs(input_str):
+    return [token_to_id[w] for w in input_str.split()]
 
-labels = torch.tensor([[token_to_id["is"],
-                        token_to_id["statquest"],
-                        token_to_id["<EOS>"],
-                        token_to_id["awesome"],
-                        token_to_id["<EOS>"]],
 
-                       [token_to_id["is"],
-                        token_to_id["what"],
-                        token_to_id["<EOS>"],
-                        token_to_id["awesome"],
-                        token_to_id["<EOS>"]]])
+def input_to_tensor(input_str):
+    return torch.tensor(input_to_IDs(input_str))
 
-dataset = TensorDataset(inputs, labels)
-dataloader = DataLoader(dataset)
+
+def inputs_to_tensor(input_strs):
+    return torch.tensor([input_to_IDs(input_str) for input_str in input_strs])
+
+
+def advance_input(input_str):
+    words = input_str.split()
+    del words[0]
+    words.append('<EOS>')
+    return ' '.join(words)
+
+
+input_strings = ['what is statquest <EOS> awesome',
+                 'statquest is what <EOS> awesome',
+                 #  'what is apple <EOS> fruit',
+                 #  'what is banana <EOS> fruit',
+                 #  'fruit <EOS> pear grape',
+                 ]
+inputs = [input_to_tensor(input_string) for input_string in input_strings]
+
+advanced_inputs = [advance_input(input_str) for input_str in input_strings]
+labels = [input_to_tensor(advanced_input)
+          for advanced_input in advanced_inputs]
+
+
+class Data(Dataset):
+    def __init__(self, X, Y):
+        self.X = X
+        self.Y = Y
+        self.len = len(X)
+
+    def __getitem__(self, index):
+        return self.X[index], self.Y[index]
+
+    def __len__(self):
+        return self.len
+
+
+dataset = Data(inputs, labels)
+dataloader = DataLoader(dataset, batch_size=batch_size)
 
 
 class PositionEncoding(nn.Module):
@@ -74,8 +102,15 @@ class PositionEncoding(nn.Module):
             print('pos encoding shape:', pe.shape)
 
     def forward(self, word_embeddings):
-
-        return word_embeddings + self.pe[:word_embeddings.size(0), :]
+        # word_embeddings dims are: batch, token_pos, embed_dim
+        # crop to length of input
+        pe_crop = self.pe[:word_embeddings.size(1), :]
+        # print(f'pe.shape {self.pe.shape}')
+        # print(f'pe_crop.shape {pe_crop.shape}')
+        # print(f'word_embeddings.shape {word_embeddings.shape}')
+        # this addition uses broadcast semantics to copy pe to each
+        # element of the batch
+        return word_embeddings + pe_crop
 
 
 class Attention(nn.Module):
@@ -91,8 +126,9 @@ class Attention(nn.Module):
         self.W_v = nn.Linear(in_features=d_model,
                              out_features=d_model, bias=False)
 
-        self.row_dim = 0
-        self.col_dim = 1
+        # dim 0 is for batch. row is 1, col is 2.
+        self.row_dim = 1
+        self.col_dim = 2
 
         self.printed_details = False
         if verbose:
@@ -133,7 +169,7 @@ class Attention(nn.Module):
         return attention_scores
 
 
-class DecoderOnlyTransformer(L.LightningModule):
+class DecoderOnlyTransformer(nn.Module):
 
     def __init__(self, num_tokens=4, d_model=2, max_len=6):
 
@@ -162,7 +198,7 @@ class DecoderOnlyTransformer(L.LightningModule):
         position_encoded = self.pe(word_embeddings)
 
         mask = torch.tril(torch.ones(
-            (token_ids.size(dim=0), token_ids.size(dim=0))))
+            (token_ids.size(dim=1), token_ids.size(dim=1))))
         mask = mask == 0
         if verbose and not self.printed_mask:
             print('mask:', mask.data)
@@ -180,7 +216,7 @@ class DecoderOnlyTransformer(L.LightningModule):
         return fc_layer_output
 
     def configure_optimizers(self):
-        return Adam(self.parameters(), lr=0.1)
+        return Adam(self.parameters(), lr=learning_rate)
 
     def training_step(self, batch, batch_idx):
         input_tokens, labels = batch  # collect input
@@ -190,11 +226,13 @@ class DecoderOnlyTransformer(L.LightningModule):
         return loss
 
 
+# model_input is a single input, not a batch
 def predict(model, model_input, max_len):
     input_length = model_input.size(dim=0)
 
     # Now get get predictions (logits) from the model
-    predictions = model(model_input)
+    # -- temporarily unsqueeze into a batch
+    predictions = model(model_input.unsqueeze(0)).squeeze(0)
     # Since we only want the prediction from the
     # last row (the most recent prediction) we use reverse index for the
     # row, -1.
@@ -212,16 +250,47 @@ def predict(model, model_input, max_len):
             break
 
         model_input = torch.cat((model_input, predicted_id))
-
-        predictions = model(model_input)
+        predictions = model(model_input.unsqueeze(0)).squeeze(0)
         predicted_id = torch.tensor([torch.argmax(predictions[-1, :])])
         predicted_ids = torch.cat((predicted_ids, predicted_id))
 
     return [id_to_token[id.item()] for id in predicted_ids]
 
 
-def input_to_tensor(input_str):
-    return torch.tensor([token_to_id[w] for w in input_str.split()])
+def train_model(model, lr, num_epochs):
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    start_time = time.time()
+
+    for epoch in range(num_epochs):
+        for batch, (X, y) in enumerate(dataloader):
+            # Forward pass
+            y_pred = model(X)
+
+            # Compute loss
+            loss = model.loss(y_pred, y)
+
+            # Backward pass and optimization
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # if batch % 100 == 0:
+            #     print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch+1}], Loss: {loss.item():.4f}")
+
+        print_freq = 10
+        if epoch == 0 or (epoch + 1) % print_freq == 0:
+            print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}")
+
+        # with torch.no_grad():
+        #     y_pred_test = model(test_data.X)
+        #     test_loss = loss_fn(y_pred_test, test_data.y)
+
+        # print(f"Epoch [{epoch+1}/{num_epochs}], Test Loss: {test_loss.item():.4f}")
+
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"Training time: {elapsed_time:.4f} seconds")
 
 
 def main():
@@ -230,29 +299,31 @@ def main():
         token_to_id), d_model=4, max_len=max_length)
 
     # Now create the input for the transformer...
-    model_input = input_to_tensor('grape what is statquest <EOS>')
+    model_input = input_to_tensor('what is statquest <EOS>')
     pred_tokens = predict(model, model_input, max_length)
     print('Predictions before training:')
     print(pred_tokens)
 
-    trainer = L.Trainer(max_epochs=30)
-    trainer.fit(model, train_dataloaders=dataloader)
+    # trainer = L.Trainer(max_epochs=30)
+    # trainer.fit(model, train_dataloaders=dataloader)
+    train_model(model, learning_rate, num_epochs)
 
     pred_tokens = predict(model, model_input, max_length)
     print('Predictions after training:')
     print(pred_tokens)
 
-    model_input2 = input_to_tensor('statquest is what <EOS>')
-    pred_tokens = predict(model, model_input2, max_length)
-    print(pred_tokens)
-
-    model_input3 = input_to_tensor('statquest is')
-    pred_tokens = predict(model, model_input3, max_length)
-    print(pred_tokens)
-
-    model_input4 = input_to_tensor('what is')
-    pred_tokens = predict(model, model_input4, max_length)
-    print(pred_tokens)
+    print('Additional tests:')
+    in_strs = ['statquest is what <EOS>',
+               'statquest is',
+               'what is',
+               #    'what is apple <EOS>',
+               #    'what is banana <EOS>',
+               #    'fruit <EOS>',
+               ]
+    for in_str in in_strs:
+        model_input = input_to_tensor(in_str)
+        pred_tokens = predict(model, model_input, max_length)
+        print(in_str, ' -> ', ' '.join(pred_tokens))
 
 
 if __name__ == "__main__":
