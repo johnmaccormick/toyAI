@@ -315,7 +315,7 @@ class Data(Dataset):
 
 
 dataset = Data(inputs, labels)
-dataloader = DataLoader(dataset)
+dataloader = DataLoader(dataset, batch_size=batch_size)
 
 
 class PositionEncoding(nn.Module):
@@ -447,7 +447,7 @@ class DecoderOnlyTransformer(L.LightningModule):
         return fc_layer_output
 
     def configure_optimizers(self):
-        return Adam(self.parameters(), lr=0.1)
+        return Adam(self.parameters(), lr=learning_rate)
 
     def training_step(self, batch, batch_idx):
         input_tokens, labels = batch  # collect input
@@ -510,6 +510,46 @@ def evaluate_gradient(model, x, y):
     # print(f'loss {loss}')
     loss.backward()
 
+# X could be a batch or a single instance
+
+
+def do_training_step(model, optimizer, X, y):
+    X_orig = X
+    y_orig = y
+    X = X.squeeze(0)
+    y = y.squeeze(0)
+    y_pred = model(X)
+    # See my diary entry for 10/23/2024 for detailed explanation of this transpose.
+    # Basically, when we have a batch size greater than one,
+    # then the first dimension of y_pred should be the batches (which is correct already),
+    # but the second should be the different possible classes
+    # (i.e. ranging over the whole vocabulary of tokens),
+    # but this is currently in the wrong place so we need to swap
+    # it from the third dimension.
+    # e.g. batch size 2, vocab size 10, input len 5 gives y_pred
+    # with shape 2,5,10 but gets transposed to 2,10,5.
+    if y_pred.ndim > 2:
+        y_pred.transpose_(dim0=1, dim1=2)
+    loss = model.loss(y_pred, y)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+
+def do_epoch(model, optimizer, dataloader):
+    for batch, (X, y) in enumerate(dataloader):
+        do_training_step(model, optimizer, X, y)
+
+
+def create_modelB(b_size):
+    L.seed_everything(seed=the_seed)
+    model = DecoderOnlyTransformerB(num_tokens=len(
+        token_to_id), d_model=4, max_len=max_length)
+    model.train()
+    optimizer = Adam(model.parameters(), lr=learning_rate)
+    dataloader = DataLoader(dataset, batch_size=b_size)
+    return model, optimizer, dataloader
+
 
 def main():
     models = []
@@ -524,36 +564,58 @@ def main():
         model.train()
         models.append(model)
 
-    for model in models:
-        print(model)
+    # for model in models:
+    #     print(model)
 
-    compare_model_params(models)
+    # compare_model_params(models)
 
-    model_input = input_to_tensor('what')
-    for model in models:
-        pred = model(model_input)
-        print(pred)
+    # model_input = input_to_tensor('what')
+    # for model in models:
+    #     pred = model(model_input)
+    #     print(pred)
 
-    pred = models[1](model_input.unsqueeze(0))
-    print(pred)
+    # pred = models[1](model_input.unsqueeze(0))
+    # print(pred)
 
-    pred = models[1](model_input.unsqueeze(0).repeat_interleave(3, dim=0))
-    print(pred)
+    # pred = models[1](model_input.unsqueeze(0).repeat_interleave(3, dim=0))
+    # print(pred)
 
     model_input = input_to_tensor('what')
     target_output = input_to_tensor('is')
 
-    for model in models:
-        evaluate_gradient(model, model_input, target_output)
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                print(f"Gradient of {name}: {param.grad}")
+    # for model in models:
+    #     evaluate_gradient(model, model_input, target_output)
+    #     for name, param in model.named_parameters():
+    #         if param.requires_grad:
+    #             print(f"Gradient of {name}: {param.grad}")
 
+    optimizers = []
+    dataloaders = []
     for model in models:
-        trainer = L.Trainer(max_epochs=30)
-        trainer.fit(model, train_dataloaders=dataloader)
+        optimizer = Adam(model.parameters(), lr=learning_rate)
+        optimizers.append(optimizer)
+        dataloader = DataLoader(dataset, batch_size=batch_size)
+        dataloaders.append(dataloader)
 
-    compare_model_params(models)
+    # train using lightning
+    # for model, dataloader in zip(models, dataloaders):
+    #     trainer = L.Trainer(max_epochs=num_epochs)
+    #     trainer.fit(model, train_dataloaders=dataloader)
+    # compare_model_params(models)
+
+    # for model, optimizer in zip(models, optimizers):
+    #     do_training_step(model, optimizer, model_input, target_output)
+    # compare_model_params(models)
+
+    # for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
+    #     for _ in range(num_epochs):
+    #         do_epoch(model, optimizer, dataloader)
+    # compare_model_params(models)
+
+    model, optimizer, dataloader = create_modelB(b_size=3)
+    for _ in range(num_epochs):
+        do_epoch(model, optimizer, dataloader)
+    models.append(model)
 
     in_strs = ['what is statquest <EOS>',
                'statquest is what <EOS>',
@@ -565,6 +627,7 @@ def main():
                'fruit <EOS>',
                ]
     for model in models:
+        print(f'\n{type(model)}:')
         for in_str in in_strs:
             model_input = input_to_tensor(in_str)
             pred_tokens = predict(model, model_input, max_length)
