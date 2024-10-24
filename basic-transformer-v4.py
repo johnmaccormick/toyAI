@@ -6,12 +6,14 @@ import torch.nn as nn  # torch.nn gives us nn.Module(), nn.Embedding() and nn.Li
 import torch  # torch let's us create tensors and also provides helper functions
 import torch.nn.functional as F  # This gives us the softmax() and argmax()
 import time
+import numpy as np
 
 verbose = False
 max_length = 6  # max tokens -- i.e. context window
-learning_rate = 0.1
-num_epochs = 100
-batch_size = 1
+learning_rate = 0.05
+num_epochs = 300
+loss_print_freq = 100
+# batch_size = 1
 the_seed = 42
 
 
@@ -50,10 +52,15 @@ def advance_input(input_str):
     words.append('<EOS>')
     return ' '.join(words)
 
-# ids is list of tensors
+
+def ids_to_string(ids):
+    # ids is a 1D  tensor containing token IDs
+    tokens = [id_to_token[ids[i].item()] for i in range(len(ids))]
+    return ' '.join(tokens)
 
 
 def add_padding(ids_list):
+    # ids_list is list of tensors
     max_len = max(map(len, ids_list))
     for i, ids in enumerate(ids_list):
         pad_len = max_len - len(ids)
@@ -96,7 +103,7 @@ class Data(Dataset):
 
 
 dataset = Data(inputs, labels)
-dataloader = DataLoader(dataset, batch_size=batch_size)
+# dataloader = DataLoader(dataset, batch_size=batch_size)
 
 
 class PositionEncoding(nn.Module):
@@ -301,12 +308,7 @@ def evaluate_gradient(model, x, y):
     loss.backward()
 
 
-# X could be a batch or a single instance
-def do_training_step(model, optimizer, X, y):
-    X_orig = X
-    y_orig = y
-    X = X.squeeze(0)
-    y = y.squeeze(0)
+def calc_pred_and_loss(model, X, y):
     y_pred = model(X)
     # See my diary entry for 10/23/2024 for detailed explanation of this transpose.
     # Basically, when we have a batch size greater than one,
@@ -320,111 +322,119 @@ def do_training_step(model, optimizer, X, y):
     if y_pred.ndim > 2:
         y_pred.transpose_(dim0=1, dim1=2)
     loss = model.loss(y_pred, y)
-    model.loss_val = loss.item()
+    return y_pred, loss
+
+
+def do_training_step(model, optimizer, X, y, print_loss=False):
+    # X could be a batch or a single instance
+    X_orig = X
+    y_orig = y
+    X = X.squeeze(0)
+    y = y.squeeze(0)
+    y_pred = model(X)
+    y_pred, loss = calc_pred_and_loss(model, X, y)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
+    # print(loss.item())
+    # I believe the cross entropy loss will compute the average loss,
+    # so we need to multiply by the number of training samples in
+    # the batch.
+    batch_size = y_pred.shape[0] if y_pred.ndim > 2 else 1
+    aggregate_loss = loss.item() * batch_size
+    if print_loss:
+        print(f'batch_size {batch_size}, aggregate_loss {
+              aggregate_loss}, avg loss {loss.item()}')
+    return aggregate_loss
 
 
-def do_epoch(model, optimizer, dataloader):
+def do_epoch(model, optimizer, dataloader, print_loss=False):
+    total_loss = 0.0
     for batch, (X, y) in enumerate(dataloader):
-        do_training_step(model, optimizer, X, y)
+        loss = do_training_step(model, optimizer, X, y)
+        total_loss += loss
+    if print_loss:
+        print(f'total epoch loss: {total_loss}')
+    return total_loss
 
 
 def do_epochs(model, optimizer, dataloader):
+    model.train()
     for epoch in range(num_epochs):
-        do_epoch(model, optimizer, dataloader)
-        if (epoch+1) % 10 == 0 or epoch == 0 or epoch == num_epochs-1:
-            print(f'epoch: {epoch}, loss_val: {model.loss_val:.4f}')
+        total_loss = do_epoch(model, optimizer, dataloader)
+        if (epoch+1) % loss_print_freq == 0 or epoch == 0 or epoch == num_epochs-1:
+            avg_loss = total_loss / len(dataloader.dataset)
+            print(f'epoch: {epoch}, avg_loss: {avg_loss:.5f}, '
+                  f'total_loss: {total_loss:.5f}, len(dataloader.dataset): {len(dataloader.dataset)}')
 
 
-def create_model(b_size):
+def create_model(batch_size):
     L.seed_everything(seed=the_seed)
     model = DecoderOnlyTransformer(num_tokens=len(
         token_to_id), d_model=4, max_len=max_length)
     model.train()
     optimizer = Adam(model.parameters(), lr=learning_rate)
-    dataloader = DataLoader(dataset, batch_size=b_size)
+    dataloader = DataLoader(dataset, batch_size=batch_size)
     return model, optimizer, dataloader
 
 
-def count_errors(model, dataloader):
+def count_errors(model, dataloader, print_errs=False):
     num_errs = 0
     for batch, (X, y) in enumerate(dataloader):
         y_pred = model(X)
         predicted_ids = torch.argmax(y_pred, dim=-1)
         # print(f'X: {X}')
         # print(f'y_pred: {y_pred}')
-        print(f'y: {y}')
-        print(f'predicted_ids: {predicted_ids}')
-        this_num_errs = torch.count_nonzero(y - predicted_ids).item()
+        # print(f'y: {y}')
+        # print(f'predicted_ids: {predicted_ids}')
+        mispredictions = (y - predicted_ids).bool()
+        this_num_errs = torch.count_nonzero(mispredictions).item()
         num_errs += this_num_errs
-        print(f'this_num_errs: {this_num_errs}')
+        # print(f'this_num_errs: {this_num_errs}')
+        if this_num_errs > 0 and print_errs:
+            print('\nerrors:')
+            this_batch_size = X.shape[0]
+            for i in range(this_batch_size):
+                if mispredictions[i].any():
+                    input_IDs = X[i]
+                    pred_IDs = predicted_ids[i]
+                    true_IDs = y[i]
+                    print()
+                    print(f'input_IDs: {ids_to_string(input_IDs)}')
+                    print(f'pred_IDs: {ids_to_string(pred_IDs)}')
+                    print(f'true_IDs: {ids_to_string(true_IDs)}')
+
     print(f'num_errs: {num_errs}')
 
 
+def print_individual_losses(model, dataloader):
+    model.eval()
+    losses = []
+    for batch_idx, (X, y) in enumerate(dataloader):
+        this_batch_size = X.shape[0]
+        print(f'batch_idx {batch_idx} contains {this_batch_size} samples')
+        for i in range(this_batch_size):
+            _, loss = calc_pred_and_loss(model, X[i], y[i])
+            losses.append(loss.item())
+    print(losses)
+    print(f'total {np.sum(losses)}')
+
+
 def main():
+    batch_sizes = [1, 3]
     models = []
-    model_params = []
-    decoder_classes = [DecoderOnlyTransformer]
-    for i in range(len(decoder_classes)):
-        decoder_class = decoder_classes[i]
-        L.seed_everything(seed=the_seed)
-        model = decoder_class(num_tokens=len(
-            token_to_id), d_model=4, max_len=max_length)
-        model.train()
-        models.append(model)
-
-    # for model in models:
-    #     print(model)
-
-    # compare_model_params(models)
-
-    # model_input = input_to_tensor('what')
-    # for model in models:
-    #     pred = model(model_input)
-    #     print(pred)
-
-    # pred = models[1](model_input.unsqueeze(0))
-    # print(pred)
-
-    # pred = models[1](model_input.unsqueeze(0).repeat_interleave(3, dim=0))
-    # print(pred)
-
-    model_input = input_to_tensor('what')
-    target_output = input_to_tensor('is')
-
-    # for model in models:
-    #     evaluate_gradient(model, model_input, target_output)
-    #     for name, param in model.named_parameters():
-    #         if param.requires_grad:
-    #             print(f"Gradient of {name}: {param.grad}")
-
     optimizers = []
     dataloaders = []
-    for model in models:
-        optimizer = Adam(model.parameters(), lr=learning_rate)
+
+    for i in range(len(batch_sizes)):
+        model, optimizer, dataloader = create_model(batch_size=batch_sizes[i])
+        models.append(model)
         optimizers.append(optimizer)
-        dataloader = DataLoader(dataset, batch_size=batch_size)
         dataloaders.append(dataloader)
-
-    # train using lightning
-    # for model, dataloader in zip(models, dataloaders):
-    #     trainer = L.Trainer(max_epochs=num_epochs)
-    #     trainer.fit(model, train_dataloaders=dataloader)
-    # compare_model_params(models)
-
-    # for model, optimizer in zip(models, optimizers):
-    #     do_training_step(model, optimizer, model_input, target_output)
-    # compare_model_params(models)
 
     for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
         do_epochs(model, optimizer, dataloader)
     # compare_model_params(models)
-
-    model, optimizer, dataloader = create_model(b_size=3)
-    do_epochs(model, optimizer, dataloader)
-    models.append(model)
 
     in_strs = ['what is statquest <EOS>',
                'statquest is what <EOS>',
@@ -437,43 +447,61 @@ def main():
                'pear',
                'grape',
                ]
-    for model in models:
-        print(f'\n{type(model)}:')
-        for in_str in in_strs:
-            model_input = input_to_tensor(in_str)
-            pred_tokens = predict(model, model_input, max_length)
-            print(in_str, ' -> ', ' '.join(pred_tokens))
 
-    count_errors(models[0], dataloader)
+    # for model, dataloader in zip(models, dataloaders):
+    #     model.eval()
+    #     print(f'\nmodel type {type(model)}, '
+    #           f'batch size {dataloader.batch_size}')
+    #     for in_str in in_strs:
+    #         model_input = input_to_tensor(in_str)
+    #         pred_tokens = predict(model, model_input, max_length)
+    #         print(in_str, ' -> ', ' '.join(pred_tokens))
+    #     count_errors(model, dataloader, print_errs=True)
 
-    return
+    print('individual losses')
+    for model, dataloader in zip(models, dataloaders):
+        print_individual_losses(model, dataloader)
 
-    # Now create the input for the transformer...
-    model_input = input_to_tensor('what is statquest <EOS>')
-    pred_tokens = predict(model, model_input, max_length)
-    print('Predictions before training:')
-    print(pred_tokens)
+    print('single training step')
+    for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
+        for X, y in dataloader:
+            do_training_step(model, optimizer, X, y, print_loss=True)
+            break
 
-    trainer = L.Trainer(max_epochs=30)
-    trainer.fit(model, train_dataloaders=dataloader)
+    print('single epoch')
+    for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
+        for X, y in dataloader:
+            do_epoch(model, optimizer, dataloader, print_loss=True)
+            break
 
-    pred_tokens = predict(model, model_input, max_length)
-    print('Predictions after training:')
-    print(pred_tokens)
+    # return
 
-    print('Additional tests:')
-    in_strs = ['statquest is what <EOS>',
-               'statquest is',
-               'what is',
-               'what',
-               'what is apple <EOS>',
-               'what is banana <EOS>',
-               'fruit <EOS>',
-               ]
-    for in_str in in_strs:
-        model_input = input_to_tensor(in_str)
-        pred_tokens = predict(model, model_input, max_length)
-        print(in_str, ' -> ', ' '.join(pred_tokens))
+    # # Now create the input for the transformer...
+    # model_input = input_to_tensor('what is statquest <EOS>')
+    # pred_tokens = predict(model, model_input, max_length)
+    # print('Predictions before training:')
+    # print(pred_tokens)
+
+    # trainer = L.Trainer(max_epochs=30)
+    # trainer.fit(model, train_dataloaders=dataloader)
+
+    # pred_tokens = predict(model, model_input, max_length)
+    # print('Predictions after training:')
+    # print(pred_tokens)
+
+    # print('Additional tests:')
+    # in_strs = ['statquest is what <EOS>',
+    #            'statquest is',
+    #            'what is',
+    #            'what',
+    #            'what is apple <EOS>',
+    #            'what is banana <EOS>',
+    #            'fruit <EOS>',
+    #            ]
+    # for in_str in in_strs:
+    #     model_input = input_to_tensor(in_str)
+    #     pred_tokens = predict(model, model_input, max_length)
+    #     print(in_str, ' -> ', ' '.join(pred_tokens))
 
 
 if __name__ == "__main__":
