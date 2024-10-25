@@ -10,11 +10,12 @@ import numpy as np
 
 verbose = False
 max_length = 6  # max tokens -- i.e. context window
-learning_rate = 0.05
+d_model = 4  # 4
+learning_rate = 0.02
 num_epochs = 300
-loss_print_freq = 100
+loss_print_freq = 50
 # batch_size = 1
-the_seed = 42
+the_seed = 44
 
 
 token_to_id = {'what': 0,
@@ -77,9 +78,10 @@ input_strings = ['what is statquest <EOS> awesome',
                  'what is apple <EOS> fruit',
                  'what is banana <EOS> fruit',
                  'fruit <EOS> pear grape',
-                 'pear pear <EOS>',
-                 'grape grape <EOS>',
+                 'pear <EOS> pear',
+                 'grape <EOS> grape',
                  ]
+
 inputs = [input_to_tensor(input_string) for input_string in input_strings]
 advanced_inputs = [advance_input(input_str) for input_str in input_strings]
 labels = [input_to_tensor(advanced_input)
@@ -257,7 +259,7 @@ class DecoderOnlyTransformer(L.LightningModule):
 def predict(model, model_input, max_len):
     input_length = model_input.size(dim=0)
 
-    # Now get get predictions (logits) from the model
+    # get predictions (logits) from the model
     predictions = model(model_input)
     # Since we only want the prediction from the
     # last row (the most recent prediction) we use reverse index for the
@@ -364,22 +366,41 @@ def do_epochs(model, optimizer, dataloader):
         total_loss = do_epoch(model, optimizer, dataloader)
         if (epoch+1) % loss_print_freq == 0 or epoch == 0 or epoch == num_epochs-1:
             avg_loss = total_loss / len(dataloader.dataset)
-            print(f'epoch: {epoch}, avg_loss: {avg_loss:.5f}, '
-                  f'total_loss: {total_loss:.5f}, len(dataloader.dataset): {len(dataloader.dataset)}')
+            print(f'epoch: {epoch}, avg_loss: {avg_loss:.5f}')
 
 
 def create_model(batch_size):
     L.seed_everything(seed=the_seed)
     model = DecoderOnlyTransformer(num_tokens=len(
-        token_to_id), d_model=4, max_len=max_length)
+        token_to_id), d_model=d_model, max_len=max_length)
     model.train()
     optimizer = Adam(model.parameters(), lr=learning_rate)
     dataloader = DataLoader(dataset, batch_size=batch_size)
     return model, optimizer, dataloader
 
 
-def count_errors(model, dataloader, print_errs=False):
+def find_val(tensor, value):
+    """Finds the index of the first element equal to a given value in a 1D PyTorch tensor.
+       -- gen my Colab AI
+
+    Args:
+      tensor: The 1D PyTorch tensor.
+      value: The value to search for.
+
+    Returns:
+      The index of the first element equal to the given value, or -1 if the value
+      is not found.
+    """
+    indices = (tensor == value).nonzero(as_tuple=True)[0]
+    if len(indices) > 0:
+        return indices[0].item()
+    else:
+        return -1
+
+
+def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
     num_errs = 0
+    num_response_errs = 0
     for batch, (X, y) in enumerate(dataloader):
         y_pred = model(X)
         predicted_ids = torch.argmax(y_pred, dim=-1)
@@ -392,10 +413,25 @@ def count_errors(model, dataloader, print_errs=False):
         num_errs += this_num_errs
         # print(f'this_num_errs: {this_num_errs}')
         if this_num_errs > 0 and print_errs:
-            print('\nerrors:')
+            msg = '\nerrors:' if not response_errs_only else '\nresponse errors:'
+            printed_msg = False
+
             this_batch_size = X.shape[0]
             for i in range(this_batch_size):
-                if mispredictions[i].any():
+                mispreds = mispredictions[i]
+                if response_errs_only:
+                    idx = find_val(y[i], token_to_id['<EOS>'])
+                    if idx >= 0:
+                        relevant_mispreds = mispreds[idx+1:]
+                    else:
+                        relevant_mispreds = torch.Tensor()
+                else:
+                    relevant_mispreds = mispreds
+                if relevant_mispreds.any():
+                    num_response_errs += 1
+                    if not printed_msg:
+                        print(msg)
+                        printed_msg = True
                     input_IDs = X[i]
                     pred_IDs = predicted_ids[i]
                     true_IDs = y[i]
@@ -405,6 +441,8 @@ def count_errors(model, dataloader, print_errs=False):
                     print(f'true_IDs: {ids_to_string(true_IDs)}')
 
     print(f'num_errs: {num_errs}')
+    if response_errs_only:
+        print(f'num_response_errs: {num_response_errs}')
 
 
 def print_individual_losses(model, dataloader):
@@ -421,7 +459,7 @@ def print_individual_losses(model, dataloader):
 
 
 def main():
-    batch_sizes = [1, 3]
+    batch_sizes = [5]
     models = []
     optimizers = []
     dataloaders = []
@@ -444,37 +482,44 @@ def main():
                'what is apple <EOS>',
                'what is banana <EOS>',
                'fruit <EOS>',
-               'pear',
-               'grape',
+               'pear <EOS>',
+               'grape <EOS>',
                ]
 
-    # for model, dataloader in zip(models, dataloaders):
-    #     model.eval()
-    #     print(f'\nmodel type {type(model)}, '
-    #           f'batch size {dataloader.batch_size}')
-    #     for in_str in in_strs:
-    #         model_input = input_to_tensor(in_str)
-    #         pred_tokens = predict(model, model_input, max_length)
-    #         print(in_str, ' -> ', ' '.join(pred_tokens))
-    #     count_errors(model, dataloader, print_errs=True)
-
-    print('individual losses')
     for model, dataloader in zip(models, dataloaders):
-        print_individual_losses(model, dataloader)
+        model.eval()
+        print(f'\nmodel type {type(model)}, '
+              f'batch size {dataloader.batch_size}')
+        for in_str in in_strs:
+            model_input = input_to_tensor(in_str)
+            pred_tokens = predict(model, model_input, max_length)
+            print(in_str, ' -> ', ' '.join(pred_tokens))
+        count_errors(model, dataloader, print_errs=True,
+                     response_errs_only=True)
 
-    print('single training step')
-    for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
-        for X, y in dataloader:
-            do_training_step(model, optimizer, X, y, print_loss=True)
-            break
+    # print('individual losses')
+    # for model, dataloader in zip(models, dataloaders):
+    #     print_individual_losses(model, dataloader)
 
-    print('single epoch')
-    for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
-        for X, y in dataloader:
-            do_epoch(model, optimizer, dataloader, print_loss=True)
-            break
+    # print('single training step')
+    # for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
+    #     for X, y in dataloader:
+    #         do_training_step(model, optimizer, X, y, print_loss=True)
+    #         break
+
+    # print('single epoch')
+    # for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
+    #     for X, y in dataloader:
+    #         do_epoch(model, optimizer, dataloader, print_loss=True)
+    #         break
 
     # return
+
+
+#####################################################################
+#####################################################################
+#####################################################################
+#####################################################################
 
     # # Now create the input for the transformer...
     # model_input = input_to_tensor('what is statquest <EOS>')
