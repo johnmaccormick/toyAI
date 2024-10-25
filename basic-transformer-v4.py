@@ -256,6 +256,16 @@ class DecoderOnlyTransformer(L.LightningModule):
         return loss
 
 
+def predict_top(model, model_input, num_top):
+    # last row (final token) only
+    logits = model(model_input)[-1, :]
+    probs = F.softmax(logits, dim=0)
+    top_probs, top_indices = torch.topk(probs, num_top)
+    for idx, prob in zip(top_indices, top_probs):
+        token = id_to_token[idx.item()]
+        print(f'{token}: {prob:.2f}')
+
+
 def predict(model, model_input, max_len):
     input_length = model_input.size(dim=0)
 
@@ -486,16 +496,21 @@ def main():
                'grape <EOS>',
                ]
 
-    for model, dataloader in zip(models, dataloaders):
-        model.eval()
-        print(f'\nmodel type {type(model)}, '
-              f'batch size {dataloader.batch_size}')
-        for in_str in in_strs:
-            model_input = input_to_tensor(in_str)
-            pred_tokens = predict(model, model_input, max_length)
-            print(in_str, ' -> ', ' '.join(pred_tokens))
-        count_errors(model, dataloader, print_errs=True,
-                     response_errs_only=True)
+    # for model, dataloader in zip(models, dataloaders):
+    #     model.eval()
+    #     print(f'\nmodel type {type(model)}, '
+    #           f'batch size {dataloader.batch_size}')
+    #     for in_str in in_strs:
+    #         model_input = input_to_tensor(in_str)
+    #         pred_tokens = predict(model, model_input, max_length)
+    #         print(in_str, ' -> ', ' '.join(pred_tokens))
+    #     count_errors(model, dataloader, print_errs=True,
+    #                  response_errs_only=True)
+
+    model = models[0]
+    in_str = 'what is apple <EOS>'
+    num_top = 3
+    predict_top(model, input_to_tensor(in_str), num_top=num_top)
 
     # print('individual losses')
     # for model, dataloader in zip(models, dataloaders):
