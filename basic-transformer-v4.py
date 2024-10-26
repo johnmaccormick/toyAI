@@ -1,12 +1,16 @@
+# pylint disable=C0116
+#
+# :missing-function-docstring
+import numpy as np
+
 import lightning as L  # Lightning makes it easier to write, optimize and scale our code
 # We'll store our data in DataLoaders
-from torch.utils.data import Dataset, TensorDataset, DataLoader
+from torch.utils.data import Dataset, DataLoader
 from torch.optim import Adam  # We will use the Adam optimizer, which is, essentially,
 import torch.nn as nn  # torch.nn gives us nn.Module(), nn.Embedding() and nn.Linear()
 import torch  # torch let's us create tensors and also provides helper functions
 import torch.nn.functional as F  # This gives us the softmax() and argmax()
-import time
-import numpy as np
+
 
 verbose = False
 max_length = 6  # max tokens -- i.e. context window
@@ -155,11 +159,15 @@ class Attention(nn.Module):
         self.W_v = nn.Linear(in_features=d_model,
                              out_features=d_model, bias=False)
 
-        # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2. But there could be even more dims?? -2 and -1 work for this?
+        # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2.
+        # But there could be even more dims?? -2 and -1 work for this?
         self.row_dim = -2
         self.col_dim = -1
 
         self.printed_details = False
+        self.save_attention = False
+        self.saved_attention = torch.Tensor()
+
         if verbose:
             print('W_q:', self.W_q.weight.shape)
             print('W_k:', self.W_k.weight.shape)
@@ -197,6 +205,13 @@ class Attention(nn.Module):
             print('attention_scores shape:', attention_scores.data.shape)
             self.printed_details = True
 
+        if self.save_attention:
+            self.saved_attention = attention_percents
+            self.saved_encodings = encodings_for_q
+
+        # if torch.rand(1).item() < 0.002:
+        #     print(rounded_tensor_to_str(attention_percents))
+
         return attention_scores
 
 
@@ -216,6 +231,8 @@ class DecoderOnlyTransformer(L.LightningModule):
 
         self.loss = nn.CrossEntropyLoss()
 
+        self.saved_token_IDs = torch.Tensor()
+
         self.printed_mask = False
         if verbose:
             print('we:', self.we.weight.shape)
@@ -223,6 +240,8 @@ class DecoderOnlyTransformer(L.LightningModule):
             print('fc_layer:', self.fc_layer.weight.shape)
 
     def forward(self, token_ids):
+        if self.self_attention.save_attention:
+            self.saved_token_IDs = token_ids
 
         word_embeddings = self.we(token_ids)
         position_encoded = self.pe(word_embeddings)
@@ -254,6 +273,12 @@ class DecoderOnlyTransformer(L.LightningModule):
         loss = self.loss(output, labels[0])
 
         return loss
+
+    def set_save_attention(self, save: bool):
+        self.self_attention.save_attention = save
+
+    def get_saved_attention(self):
+        return self.self_attention.saved_attention
 
 
 def predict_top(model, model_input, num_top):
@@ -468,14 +493,19 @@ def print_individual_losses(model, dataloader):
     print(f'total {np.sum(losses)}')
 
 
+def rounded_tensor_to_str(tensor, precision=2):
+    return np.array_str(
+        tensor.detach().numpy(), precision=precision, suppress_small=True)
+
+
 def main():
     batch_sizes = [5]
     models = []
     optimizers = []
     dataloaders = []
 
-    for i in range(len(batch_sizes)):
-        model, optimizer, dataloader = create_model(batch_size=batch_sizes[i])
+    for batch_size in batch_sizes:
+        model, optimizer, dataloader = create_model(batch_size=batch_size)
         models.append(model)
         optimizers.append(optimizer)
         dataloaders.append(dataloader)
@@ -507,10 +537,29 @@ def main():
     #     count_errors(model, dataloader, print_errs=True,
     #                  response_errs_only=True)
 
-    model = models[0]
-    in_str = 'what is apple <EOS>'
-    num_top = 3
-    predict_top(model, input_to_tensor(in_str), num_top=num_top)
+    # with torch.no_grad():
+    #     model = models[0]
+    #     in_str = 'what is apple <EOS>'
+    #     num_top = 3
+    #     model.set_save_attention(True)
+    #     predict_top(model, input_to_tensor(in_str), num_top=num_top)
+    #     attention = model.get_saved_attention()
+    #     token_ids = model.saved_token_IDs
+    #     tokens = [id_to_token[t.item()] for t in token_ids]
+    #     print(f'attention\n{rounded_tensor_to_str(attention)}')
+    #     print(f'tokens {tokens}')
+
+    with torch.no_grad():
+        model = models[0]
+        model.set_save_attention(True)
+        for in_str in input_strings:
+            logits = model(input_to_tensor(in_str))
+            attention = model.get_saved_attention()
+            token_ids = model.saved_token_IDs
+            tokens = [id_to_token[t.item()] for t in token_ids]
+            print(in_str)
+            print(' '.join(tokens))
+            print(rounded_tensor_to_str(attention))
 
     # print('individual losses')
     # for model, dataloader in zip(models, dataloaders):
@@ -562,7 +611,6 @@ def main():
     #     model_input = input_to_tensor(in_str)
     #     pred_tokens = predict(model, model_input, max_length)
     #     print(in_str, ' -> ', ' '.join(pred_tokens))
-
 
 if __name__ == "__main__":
     main()
