@@ -1,15 +1,19 @@
 # pylint disable=C0116
 #
 # :missing-function-docstring
+import time
 import numpy as np
 
-import lightning as L  # Lightning makes it easier to write, optimize and scale our code
+# import lightning as L  # Lightning makes it easier to write, optimize and scale our code
 # We'll store our data in DataLoaders
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import Adam  # We will use the Adam optimizer, which is, essentially,
 import torch.nn as nn  # torch.nn gives us nn.Module(), nn.Embedding() and nn.Linear()
 import torch  # torch let's us create tensors and also provides helper functions
 import torch.nn.functional as F  # This gives us the softmax() and argmax()
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 
 verbose = False
@@ -193,6 +197,7 @@ class Attention(nn.Module):
         if verbose and not self.printed_details:
             print('encodings_for_q shape:', encodings_for_q.shape)
             print('q:', q.shape)
+
             print('k:', k.shape)
             print('v:', v.shape)
             print('sims:', sims)
@@ -215,8 +220,8 @@ class Attention(nn.Module):
         return attention_scores
 
 
-# class DecoderOnlyTransformer(nn.Module):
-class DecoderOnlyTransformer(L.LightningModule):
+class DecoderOnlyTransformer(nn.Module):
+    # class DecoderOnlyTransformer(L.LightningModule):
 
     def __init__(self, num_tokens=4, d_model=2, max_len=6):
 
@@ -247,7 +252,7 @@ class DecoderOnlyTransformer(L.LightningModule):
         position_encoded = self.pe(word_embeddings)
 
         mask = torch.tril(torch.ones(
-            (token_ids.size(dim=-1), token_ids.size(dim=-1))))
+            (token_ids.size(dim=-1), token_ids.size(dim=-1)), device=device))
         mask = mask == 0
         if verbose and not self.printed_mask:
             print('mask:', mask.data)
@@ -283,7 +288,7 @@ class DecoderOnlyTransformer(L.LightningModule):
 
 def predict_top(model, model_input, num_top):
     # last row (final token) only
-    logits = model(model_input)[-1, :]
+    logits = model(model_input.to(device))[-1, :]
     probs = F.softmax(logits, dim=0)
     top_probs, top_indices = torch.topk(probs, num_top)
     for idx, prob in zip(top_indices, top_probs):
@@ -295,7 +300,7 @@ def predict(model, model_input, max_len):
     input_length = model_input.size(dim=0)
 
     # get predictions (logits) from the model
-    predictions = model(model_input)
+    predictions = model(model_input.to(device))
     # Since we only want the prediction from the
     # last row (the most recent prediction) we use reverse index for the
     # row, -1.
@@ -314,7 +319,7 @@ def predict(model, model_input, max_len):
 
         model_input = torch.cat((model_input, predicted_id))
 
-        predictions = model(model_input)
+        predictions = model(model_input.to(device))
         predicted_id = torch.tensor([torch.argmax(predictions[-1, :])])
         predicted_ids = torch.cat((predicted_ids, predicted_id))
 
@@ -339,14 +344,14 @@ def compare_model_params(models):
 def evaluate_gradient(model, x, y):
     model.train()
     model.zero_grad()
-    y_pred = model(x)  # Perform a forward pass
-    loss = model.loss(y_pred, y)
+    y_pred = model(x.to(device))  # Perform a forward pass
+    loss = model.loss(y_pred, y.to(device))
     # print(f'loss {loss}')
     loss.backward()
 
 
 def calc_pred_and_loss(model, X, y):
-    y_pred = model(X)
+    y_pred = model(X.to(device))
     # See my diary entry for 10/23/2024 for detailed explanation of this transpose.
     # Basically, when we have a batch size greater than one,
     # then the first dimension of y_pred should be the batches (which is correct already),
@@ -358,7 +363,7 @@ def calc_pred_and_loss(model, X, y):
     # with shape 2,5,10 but gets transposed to 2,10,5.
     if y_pred.ndim > 2:
         y_pred.transpose_(dim0=1, dim1=2)
-    loss = model.loss(y_pred, y)
+    loss = model.loss(y_pred, y.to(device))
     return y_pred, loss
 
 
@@ -367,8 +372,8 @@ def do_training_step(model, optimizer, X, y, print_loss=False):
     X_orig = X
     y_orig = y
     X = X.squeeze(0)
-    y = y.squeeze(0)
-    y_pred = model(X)
+    y = y.squeeze(0).to(device)
+    y_pred = model(X.to(device))
     y_pred, loss = calc_pred_and_loss(model, X, y)
     optimizer.zero_grad()
     loss.backward()
@@ -380,8 +385,9 @@ def do_training_step(model, optimizer, X, y, print_loss=False):
     batch_size = y_pred.shape[0] if y_pred.ndim > 2 else 1
     aggregate_loss = loss.item() * batch_size
     if print_loss:
-        print(f'batch_size {batch_size}, aggregate_loss {
-              aggregate_loss}, avg loss {loss.item()}')
+        print(f'batch_size {batch_size}, ' +
+              f'aggregate_loss {aggregate_loss}, ' +
+              f'avg loss {loss.item()}')
     return aggregate_loss
 
 
@@ -397,17 +403,24 @@ def do_epoch(model, optimizer, dataloader, print_loss=False):
 
 def do_epochs(model, optimizer, dataloader):
     model.train()
+    start_time = time.time()
     for epoch in range(num_epochs):
         total_loss = do_epoch(model, optimizer, dataloader)
         if (epoch+1) % loss_print_freq == 0 or epoch == 0 or epoch == num_epochs-1:
             avg_loss = total_loss / len(dataloader.dataset)
             print(f'epoch: {epoch}, avg_loss: {avg_loss:.5f}')
+    end_time = time.time()
+    training_time = end_time - start_time
+    print(f"Training time: {training_time:.2f} seconds")
 
 
 def create_model(batch_size):
-    L.seed_everything(seed=the_seed)
+    # L.seed_everything(seed=the_seed)
+    torch.manual_seed(the_seed)
+
     model = DecoderOnlyTransformer(num_tokens=len(
         token_to_id), d_model=d_model, max_len=max_length)
+    model.to(device)
     model.train()
     optimizer = Adam(model.parameters(), lr=learning_rate)
     dataloader = DataLoader(dataset, batch_size=batch_size)
@@ -437,7 +450,7 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
     num_errs = 0
     num_response_errs = 0
     for batch, (X, y) in enumerate(dataloader):
-        y_pred = model(X)
+        y_pred = model(X.to(device))
         predicted_ids = torch.argmax(y_pred, dim=-1)
         # print(f'X: {X}')
         # print(f'y_pred: {y_pred}')
@@ -495,7 +508,7 @@ def print_individual_losses(model, dataloader):
 
 def rounded_tensor_to_str(tensor, precision=2):
     return np.array_str(
-        tensor.detach().numpy(), precision=precision, suppress_small=True)
+        tensor.cpu().detach().numpy(), precision=precision, suppress_small=True)
 
 
 def main():
@@ -526,40 +539,39 @@ def main():
                'grape <EOS>',
                ]
 
-    # for model, dataloader in zip(models, dataloaders):
-    #     model.eval()
-    #     print(f'\nmodel type {type(model)}, '
-    #           f'batch size {dataloader.batch_size}')
-    #     for in_str in in_strs:
-    #         model_input = input_to_tensor(in_str)
-    #         pred_tokens = predict(model, model_input, max_length)
-    #         print(in_str, ' -> ', ' '.join(pred_tokens))
-    #     count_errors(model, dataloader, print_errs=True,
-    #                  response_errs_only=True)
-
     # with torch.no_grad():
-    #     model = models[0]
-    #     in_str = 'what is apple <EOS>'
-    #     num_top = 3
-    #     model.set_save_attention(True)
-    #     predict_top(model, input_to_tensor(in_str), num_top=num_top)
-    #     attention = model.get_saved_attention()
-    #     token_ids = model.saved_token_IDs
-    #     tokens = [id_to_token[t.item()] for t in token_ids]
-    #     print(f'attention\n{rounded_tensor_to_str(attention)}')
-    #     print(f'tokens {tokens}')
+    #     for model, dataloader in zip(models, dataloaders):
+    #         model.eval()
+    #         print(f'\nmodel type {type(model)}, '
+    #               f'batch size {dataloader.batch_size}')
+    #         for in_str in in_strs:
+    #             model_input = input_to_tensor(in_str)
+    #             pred_tokens = predict(model, model_input, max_length)
+    #             print(in_str, ' -> ', ' '.join(pred_tokens))
+    #         count_errors(model, dataloader, print_errs=True,
+    #                      response_errs_only=True)
 
     with torch.no_grad():
         model = models[0]
+        in_str = 'what is apple <EOS>'
+        num_top = 3
         model.set_save_attention(True)
-        for in_str in input_strings:
-            logits = model(input_to_tensor(in_str))
-            attention = model.get_saved_attention()
-            token_ids = model.saved_token_IDs
-            tokens = [id_to_token[t.item()] for t in token_ids]
-            print(in_str)
-            print(' '.join(tokens))
-            print(rounded_tensor_to_str(attention))
+        predict_top(model, input_to_tensor(in_str), num_top=num_top)
+        attention = model.get_saved_attention()
+        token_ids = model.saved_token_IDs
+        tokens = [id_to_token[t.item()] for t in token_ids]
+        print(f'attention\n{rounded_tensor_to_str(attention)}')
+        print(f'tokens {tokens}')
+
+    # with torch.no_grad():
+    #     model = models[0]
+    #     model.set_save_attention(True)
+    #     for in_str in input_strings:
+    #         logits = model(input_to_tensor(in_str).to(device))
+    #         attention = model.get_saved_attention()
+    #         token_ids = model.saved_token_IDs
+    #         print('\n' + in_str)
+    #         print(rounded_tensor_to_str(attention))
 
     # print('individual losses')
     # for model, dataloader in zip(models, dataloaders):
