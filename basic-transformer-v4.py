@@ -23,7 +23,14 @@ learning_rate = 0.02
 num_epochs = 300
 loss_print_freq = 50
 # batch_size = 1
-the_seed = 44
+the_seed = 43
+
+# True if the so-called 'FFN' layer is a genuine feedforward network
+# with two layers separated by a nonlinear activation function.
+# False if the 'FFN' layer is just a single linear module.
+use_2ffn = True
+# Number of nodes in the middle part of the two-layer FFN (if used)
+d_ffn = 20
 
 
 token_to_id = {'what': 0,
@@ -220,6 +227,20 @@ class Attention(nn.Module):
         return attention_scores
 
 
+class FFN_2_layer(nn.Module):
+    def __init__(self, d_model, d_ffn, num_tokens):
+        super().__init__()
+        self.fc1 = nn.Linear(in_features=d_model, out_features=d_ffn)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(in_features=d_ffn, out_features=num_tokens)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.relu1(x)
+        x = self.fc2(x)
+        return x
+
+
 class DecoderOnlyTransformer(nn.Module):
     # class DecoderOnlyTransformer(L.LightningModule):
 
@@ -232,7 +253,11 @@ class DecoderOnlyTransformer(nn.Module):
         self.pe = PositionEncoding(d_model=d_model,
                                    max_len=max_len)
         self.self_attention = Attention(d_model=d_model)
-        self.fc_layer = nn.Linear(in_features=d_model, out_features=num_tokens)
+        if use_2ffn:
+            self.fc_layer = FFN_2_layer(d_model, d_ffn, num_tokens)
+        else:
+            self.fc_layer = nn.Linear(
+                in_features=d_model, out_features=num_tokens)
 
         self.loss = nn.CrossEntropyLoss()
 
@@ -539,29 +564,29 @@ def main():
                'grape <EOS>',
                ]
 
-    # with torch.no_grad():
-    #     for model, dataloader in zip(models, dataloaders):
-    #         model.eval()
-    #         print(f'\nmodel type {type(model)}, '
-    #               f'batch size {dataloader.batch_size}')
-    #         for in_str in in_strs:
-    #             model_input = input_to_tensor(in_str)
-    #             pred_tokens = predict(model, model_input, max_length)
-    #             print(in_str, ' -> ', ' '.join(pred_tokens))
-    #         count_errors(model, dataloader, print_errs=True,
-    #                      response_errs_only=True)
-
     with torch.no_grad():
-        model = models[0]
-        in_str = 'what is apple <EOS>'
-        num_top = 3
-        model.set_save_attention(True)
-        predict_top(model, input_to_tensor(in_str), num_top=num_top)
-        attention = model.get_saved_attention()
-        token_ids = model.saved_token_IDs
-        tokens = [id_to_token[t.item()] for t in token_ids]
-        print(f'attention\n{rounded_tensor_to_str(attention)}')
-        print(f'tokens {tokens}')
+        for model, dataloader in zip(models, dataloaders):
+            model.eval()
+            print(f'\nmodel type {type(model)}, '
+                  f'batch size {dataloader.batch_size}')
+            for in_str in in_strs:
+                model_input = input_to_tensor(in_str)
+                pred_tokens = predict(model, model_input, max_length)
+                print(in_str, ' -> ', ' '.join(pred_tokens))
+            count_errors(model, dataloader, print_errs=True,
+                         response_errs_only=True)
+
+    # with torch.no_grad():
+    #     model = models[0]
+    #     in_str = 'what is apple <EOS>'
+    #     num_top = 3
+    #     model.set_save_attention(True)
+    #     predict_top(model, input_to_tensor(in_str), num_top=num_top)
+    #     attention = model.get_saved_attention()
+    #     token_ids = model.saved_token_IDs
+    #     tokens = [id_to_token[t.item()] for t in token_ids]
+    #     print(f'attention\n{rounded_tensor_to_str(attention)}')
+    #     print(f'tokens {tokens}')
 
     # with torch.no_grad():
     #     model = models[0]
