@@ -1,6 +1,7 @@
 # pylint disable=C0116
 #
 # :missing-function-docstring
+import sys
 import time
 import numpy as np
 
@@ -19,12 +20,7 @@ print(f"Using device: {device}")
 verbose = False
 max_length = 6  # max tokens -- i.e. context window
 d_model = 4  # 4
-learning_rate = 0.02
-num_epochs = 300
-loss_print_freq = 50
-# batch_size = 1
-the_seed = 43
-
+num_attn_heads = 5
 # True if the so-called 'FFN' layer is a genuine feedforward network
 # with two layers separated by a nonlinear activation function.
 # False if the 'FFN' layer is just a single linear module.
@@ -32,6 +28,14 @@ use_2ffn = True
 # Number of nodes in the middle part of the two-layer FFN (if used)
 d_ffn = 20
 
+
+learning_rate = 0.02
+num_epochs = 300
+loss_print_freq = 50
+# batch_size = 1
+THE_SEED = 42
+SAVE_ATTENTION = False
+MULTI_HEAD = True
 
 token_to_id = {'what': 0,
                'is': 1,
@@ -176,13 +180,14 @@ class Attention(nn.Module):
         self.col_dim = -1
 
         self.printed_details = False
-        self.save_attention = False
         self.saved_attention = torch.Tensor()
 
         if verbose:
             print('W_q:', self.W_q.weight.shape)
             print('W_k:', self.W_k.weight.shape)
             print('W_v:', self.W_v.weight.shape)
+
+        # print('W_q vals:', self.W_q.weight)
 
     def forward(self, encodings_for_q, encodings_for_k, encodings_for_v, mask=None):
 
@@ -217,14 +222,45 @@ class Attention(nn.Module):
             print('attention_scores shape:', attention_scores.data.shape)
             self.printed_details = True
 
-        if self.save_attention:
+        if SAVE_ATTENTION:
             self.saved_attention = attention_percents
-            self.saved_encodings = encodings_for_q
 
         # if torch.rand(1).item() < 0.002:
         #     print(rounded_tensor_to_str(attention_percents))
 
         return attention_scores
+
+
+class MultiHeadAttention(nn.Module):
+
+    def __init__(self, d_model=2, num_heads=1):
+        super().__init__()
+        self.attention_heads = nn.ModuleList()
+        self.num_heads = num_heads
+        for _ in range(num_heads):
+            attention_head = Attention(d_model=d_model)
+            self.attention_heads.append(attention_head)
+        # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2.
+        # But there could be even more dims?? -2 and -1 work for this?
+        # self.row_dim = -2
+        # self.col_dim = -1
+        self.printed_details = False
+        self.saved_attention = torch.Tensor()
+
+    def forward(self, encodings_for_q, encodings_for_k, encodings_for_v, mask=None):
+        # return self.attention_heads[0].forward(encodings_for_q, encodings_for_k, encodings_for_v, mask)
+        attention_scores_tot = torch.zeros_like(encodings_for_q)
+        if SAVE_ATTENTION:
+            self.saved_attention = torch.zeros_like(encodings_for_q)
+
+        # todo: Presumably there is a way to run these heads in parallel
+        for head in self.attention_heads:
+            attention_scores = head.forward(
+                encodings_for_q, encodings_for_k, encodings_for_v, mask)
+            attention_scores_tot += attention_scores
+            if SAVE_ATTENTION:
+                self.saved_attention += head.saved_attention
+        return attention_scores_tot
 
 
 class FFN_2_layer(nn.Module):
@@ -252,7 +288,13 @@ class DecoderOnlyTransformer(nn.Module):
                                embedding_dim=d_model)
         self.pe = PositionEncoding(d_model=d_model,
                                    max_len=max_len)
-        self.self_attention = Attention(d_model=d_model)
+        if not MULTI_HEAD:
+            print('single head')
+            self.self_attention = Attention(d_model=d_model)
+        else:
+            print(f'multihead, num_heads={num_attn_heads}')
+            self.self_attention = MultiHeadAttention(
+                d_model=d_model, num_heads=num_attn_heads)
         if use_2ffn:
             self.fc_layer = FFN_2_layer(d_model, d_ffn, num_tokens)
         else:
@@ -267,10 +309,10 @@ class DecoderOnlyTransformer(nn.Module):
         if verbose:
             print('we:', self.we.weight.shape)
             print('pe:', self.pe.pe.shape)
-            print('fc_layer:', self.fc_layer.weight.shape)
+            # print('fc_layer:', self.fc_layer.weight.shape)
 
     def forward(self, token_ids):
-        if self.self_attention.save_attention:
+        if SAVE_ATTENTION:
             self.saved_token_IDs = token_ids
 
         word_embeddings = self.we(token_ids)
@@ -294,6 +336,9 @@ class DecoderOnlyTransformer(nn.Module):
 
         return fc_layer_output
 
+    def get_saved_attention(self):
+        return self.self_attention.saved_attention
+
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=learning_rate)
 
@@ -303,12 +348,6 @@ class DecoderOnlyTransformer(nn.Module):
         loss = self.loss(output, labels[0])
 
         return loss
-
-    def set_save_attention(self, save: bool):
-        self.self_attention.save_attention = save
-
-    def get_saved_attention(self):
-        return self.self_attention.saved_attention
 
 
 def predict_top(model, model_input, num_top):
@@ -399,6 +438,7 @@ def do_training_step(model, optimizer, X, y, print_loss=False):
     X = X.squeeze(0)
     y = y.squeeze(0).to(device)
     y_pred = model(X.to(device))
+    # print(f'y_pred {y_pred}')
     y_pred, loss = calc_pred_and_loss(model, X, y)
     optimizer.zero_grad()
     loss.backward()
@@ -440,8 +480,9 @@ def do_epochs(model, optimizer, dataloader):
 
 
 def create_model(batch_size):
-    # L.seed_everything(seed=the_seed)
-    torch.manual_seed(the_seed)
+    # L.seed_everything(seed=THE_SEED)
+    torch.manual_seed(THE_SEED)
+    print(f'torch.manual_seed: {THE_SEED}')
 
     model = DecoderOnlyTransformer(num_tokens=len(
         token_to_id), d_model=d_model, max_len=max_length)
@@ -485,7 +526,7 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
         this_num_errs = torch.count_nonzero(mispredictions).item()
         num_errs += this_num_errs
         # print(f'this_num_errs: {this_num_errs}')
-        if this_num_errs > 0 and print_errs:
+        if this_num_errs > 0:
             msg = '\nerrors:' if not response_errs_only else '\nresponse errors:'
             printed_msg = False
 
@@ -502,20 +543,22 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
                     relevant_mispreds = mispreds
                 if relevant_mispreds.any():
                     num_response_errs += 1
-                    if not printed_msg:
-                        print(msg)
-                        printed_msg = True
-                    input_IDs = X[i]
-                    pred_IDs = predicted_ids[i]
-                    true_IDs = y[i]
-                    print()
-                    print(f'input_IDs: {ids_to_string(input_IDs)}')
-                    print(f'pred_IDs: {ids_to_string(pred_IDs)}')
-                    print(f'true_IDs: {ids_to_string(true_IDs)}')
+                    if print_errs:
+                        if not printed_msg:
+                            print(msg)
+                            printed_msg = True
+                        input_IDs = X[i]
+                        pred_IDs = predicted_ids[i]
+                        true_IDs = y[i]
+                        print()
+                        print(f'input_IDs: {ids_to_string(input_IDs)}')
+                        print(f'pred_IDs: {ids_to_string(pred_IDs)}')
+                        print(f'true_IDs: {ids_to_string(true_IDs)}')
 
     print(f'num_errs: {num_errs}')
     if response_errs_only:
         print(f'num_response_errs: {num_response_errs}')
+    return num_response_errs if response_errs_only else num_errs
 
 
 def print_individual_losses(model, dataloader):
@@ -536,7 +579,59 @@ def rounded_tensor_to_str(tensor, precision=2):
         tensor.cpu().detach().numpy(), precision=precision, suppress_small=True)
 
 
+def multi_count_response_errors(batch_size, num_trials):
+    global THE_SEED
+    start_seed = 48  # 4242
+    total_errs = 0
+    for trial in range(num_trials):
+        THE_SEED = start_seed + trial
+        model, optimizer, dataloader = create_model(batch_size=batch_size)
+        do_epochs(model, optimizer, dataloader)
+        response_errs = count_errors(
+            model, dataloader, response_errs_only=True)
+        print(f'response_errs: {response_errs}')
+        total_errs += response_errs
+    avg_errs = total_errs / num_trials
+    print(f'avg_errs: {avg_errs}')
+    # print_params(model)
+
+
+def print_gradients(model):
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            print(f"Gradient of {name}: {param.grad}")
+        else:
+            print(f"Gradient of {name}: Not available")
+
+
+def print_params(model):
+    for name, param in model.named_parameters():
+        print(f"{name}: {param.data}")
+
+
 def main():
+    # batch_size = 1
+    # global MULTI_HEAD
+    # for MULTI_HEAD in True, False:
+    #     model, optimizer, dataloader = create_model(batch_size=batch_size)
+    #     do_epochs(model, optimizer, dataloader)
+    #     response_errs = count_errors(
+    #         model, dataloader, response_errs_only=True)
+    #     print(f'response_errs: {response_errs}')
+    # for batch, (X, y) in enumerate(dataloader):
+    #     loss = do_training_step(model, optimizer, X, y)
+    #     print(f'batch {batch}, loss {loss}')
+    # print_gradients(model)
+    # if batch >= 1:
+    #     break
+
+    # return
+
+    global MULTI_HEAD
+    for MULTI_HEAD in True, False:
+        multi_count_response_errors(batch_size=5, num_trials=5)
+    return
+
     batch_sizes = [5]
     models = []
     optimizers = []
@@ -576,21 +671,22 @@ def main():
             count_errors(model, dataloader, print_errs=True,
                          response_errs_only=True)
 
-    # with torch.no_grad():
-    #     model = models[0]
-    #     in_str = 'what is apple <EOS>'
-    #     num_top = 3
-    #     model.set_save_attention(True)
-    #     predict_top(model, input_to_tensor(in_str), num_top=num_top)
-    #     attention = model.get_saved_attention()
-    #     token_ids = model.saved_token_IDs
-    #     tokens = [id_to_token[t.item()] for t in token_ids]
-    #     print(f'attention\n{rounded_tensor_to_str(attention)}')
-    #     print(f'tokens {tokens}')
+    with torch.no_grad():
+        model = models[0]
+        in_str = 'what is apple <EOS>'
+        num_top = 3
+        global SAVE_ATTENTION
+        SAVE_ATTENTION = True
+        predict_top(model, input_to_tensor(in_str), num_top=num_top)
+        attention = model.get_saved_attention()
+        token_ids = model.saved_token_IDs
+        tokens = [id_to_token[t.item()] for t in token_ids]
+        print(f'attention\n{rounded_tensor_to_str(attention)}')
+        print(f'tokens {tokens}')
 
     # with torch.no_grad():
     #     model = models[0]
-    #     model.set_save_attention(True)
+    #     SAVE_ATTENTION = True
     #     for in_str in input_strings:
     #         logits = model(input_to_tensor(in_str).to(device))
     #         attention = model.get_saved_attention()
