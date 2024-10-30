@@ -262,9 +262,15 @@ class AttentionLayer(nn.Module):
     def forward(self, encodings, mask=None):
         attention_scores = self.self_attention(
             encodings, encodings, encodings, mask)
-        residual_connection_values = encodings + attention_scores
-        ffn_outputs = self.ffn(residual_connection_values)
-        return ffn_outputs
+        residual_attention_values = encodings + attention_scores
+        ffn_outputs = self.ffn(residual_attention_values)
+        residual_ffn_values = residual_attention_values + ffn_outputs
+        # the above residuals follow equation (1) of Feng2023NeurIPS-chain-of-thought.
+        # In the notation of that equation,
+        # residual_attention_values is X^{l-1} + Attn^l(X^{l-1})
+        # and
+        # residual_ffn_values is X^{l}
+        return residual_ffn_values
 
 
 class MultiHeadAttention(nn.Module):
@@ -388,8 +394,9 @@ class DecoderOnlyTransformer(nn.Module):
 
         attn_output = self.attn_layer(position_encoded, mask)
 
-        residual_output = position_encoded + attn_output
-        tok_class_output = self.tok_classifier(residual_output)
+        # residual_output = position_encoded + attn_output
+        # tok_class_output = self.tok_classifier(residual_output)
+        tok_class_output = self.tok_classifier(attn_output)
 
         return tok_class_output
 
