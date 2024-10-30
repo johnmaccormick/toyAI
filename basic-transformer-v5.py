@@ -19,14 +19,14 @@ print(f"Using device: {device}")
 
 verbose = False
 max_length = 6  # max tokens -- i.e. context window
-d_model = 4  # 4
-num_attn_heads = 5
+D_MODEL = 4  # 4
+NUM_ATTN_HEADS = 5
 # True if the so-called 'FFN' layer is a genuine feedforward network
 # with two layers separated by a nonlinear activation function.
 # False if the 'FFN' layer is just a single linear module.
-use_2ffn = True
+USE_2FFN = True
 # Number of nodes in the middle part of the two-layer FFN (if used)
-d_ffn = 20
+D_FFN = 20
 
 
 learning_rate = 0.02
@@ -161,7 +161,15 @@ class PositionEncoding(nn.Module):
         return word_embeddings + pe_crop
 
 
-class Attention(nn.Module):
+# AttentionHead is just the part that calculates similarity
+# based on keys and queries, applies mask,
+# and (at present, but this may change)
+# also applies the value weights.
+# MultiHeadAttention combines several AttentionHeads additively.
+# The AttentionLayer combines a MultiHeadAttention with FFN
+# (typically 2-layer FC with activation in between).
+
+class AttentionHead(nn.Module):
 
     def __init__(self, d_model=2):
 
@@ -231,6 +239,34 @@ class Attention(nn.Module):
         return attention_scores
 
 
+class AttentionLayer(nn.Module):
+    def __init__(self, d_model=2, num_heads=1, d_ffn=D_MODEL):
+        super().__init__()
+
+        # attention head(s)
+        if not MULTI_HEAD:
+            print('single head')
+            self.self_attention = AttentionHead(d_model=d_model)
+        else:
+            print(f'multihead, num_heads={NUM_ATTN_HEADS}')
+            self.self_attention = MultiHeadAttention(
+                d_model=d_model, num_heads=num_heads)
+
+        # FFN layer
+        if USE_2FFN:
+            self.ffn = FFN_2_layer(d_model, d_ffn, d_model)
+        else:
+            self.ffn = nn.Linear(
+                in_features=d_model, out_features=d_model)
+
+    def forward(self, encodings, mask=None):
+        attention_scores = self.self_attention(
+            encodings, encodings, encodings, mask)
+        residual_connection_values = encodings + attention_scores
+        ffn_outputs = self.ffn(residual_connection_values)
+        return ffn_outputs
+
+
 class MultiHeadAttention(nn.Module):
 
     def __init__(self, d_model=2, num_heads=1):
@@ -238,7 +274,7 @@ class MultiHeadAttention(nn.Module):
         self.attention_heads = nn.ModuleList()
         self.num_heads = num_heads
         for _ in range(num_heads):
-            attention_head = Attention(d_model=d_model)
+            attention_head = AttentionHead(d_model=d_model)
             self.attention_heads.append(attention_head)
         # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2.
         # But there could be even more dims?? -2 and -1 work for this?
@@ -264,11 +300,11 @@ class MultiHeadAttention(nn.Module):
 
 
 class FFN_2_layer(nn.Module):
-    def __init__(self, d_model, d_ffn, num_tokens):
+    def __init__(self, d_in, d_mid, d_out):
         super().__init__()
-        self.fc1 = nn.Linear(in_features=d_model, out_features=d_ffn)
+        self.fc1 = nn.Linear(in_features=d_in, out_features=d_mid)
         self.relu1 = nn.ReLU()
-        self.fc2 = nn.Linear(in_features=d_ffn, out_features=num_tokens)
+        self.fc2 = nn.Linear(in_features=d_mid, out_features=d_out)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -292,21 +328,24 @@ class DecoderOnlyTransformer(nn.Module):
         self.pe = PositionEncoding(d_model=d_model,
                                    max_len=max_len)
 
-        # attention head(s)
-        if not MULTI_HEAD:
-            print('single head')
-            self.self_attention = Attention(d_model=d_model)
-        else:
-            print(f'multihead, num_heads={num_attn_heads}')
-            self.self_attention = MultiHeadAttention(
-                d_model=d_model, num_heads=num_attn_heads)
+        # # attention head(s)
+        # if not MULTI_HEAD:
+        #     print('single head')
+        #     self.self_attention = AttentionHead(d_model=d_model)
+        # else:
+        #     print(f'multihead, num_heads={NUM_ATTN_HEADS}')
+        #     self.self_attention = MultiHeadAttention(
+        #         d_model=d_model, num_heads=NUM_ATTN_HEADS)
 
-        # FFN layer
-        if use_2ffn:
-            self.fc_layer = FFN_2_layer(d_model, d_ffn, d_model)
-        else:
-            self.fc_layer = nn.Linear(
-                in_features=d_model, out_features=d_model)
+        # # FFN layer
+        # if USE_2FFN:
+        #     self.fc_layer = FFN_2_layer(d_model, D_FFN, d_model)
+        # else:
+        #     self.fc_layer = nn.Linear(
+        #         in_features=d_model, out_features=d_model)
+
+        self.attn_layer = AttentionLayer(
+            d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN)
 
         # final FC for token classification (outputs logits)
         self.tok_classifier = nn.Linear(
@@ -337,17 +376,19 @@ class DecoderOnlyTransformer(nn.Module):
             print('mask shape:', mask.shape)
             self.printed_mask = True
 
-        attention_input = position_encoded
+        # attention_input = position_encoded
 
-        self_attention_values = self.self_attention(attention_input,
-                                                    attention_input,
-                                                    attention_input,
-                                                    mask=mask)
+        # self_attention_values = self.self_attention(attention_input,
+        #                                             attention_input,
+        #                                             attention_input,
+        #                                             mask=mask)
 
-        residual_connection_values = position_encoded + self_attention_values
-        fc_layer_output = self.fc_layer(residual_connection_values)
+        # residual_connection_values = position_encoded + self_attention_values
+        # fc_layer_output = self.fc_layer(residual_connection_values)
 
-        residual_output = fc_layer_output + residual_connection_values
+        attn_output = self.attn_layer(position_encoded, mask)
+
+        residual_output = position_encoded + attn_output
         tok_class_output = self.tok_classifier(residual_output)
 
         return tok_class_output
@@ -501,7 +542,7 @@ def create_model(batch_size):
     print(f'torch.manual_seed: {THE_SEED}')
 
     model = DecoderOnlyTransformer(num_tokens=len(
-        token_to_id), d_model=d_model, max_len=max_length)
+        token_to_id), d_model=D_MODEL, max_len=max_length)
     model.to(device)
     model.train()
     optimizer = Adam(model.parameters(), lr=learning_rate)
