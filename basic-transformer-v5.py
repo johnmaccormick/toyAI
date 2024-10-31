@@ -1,7 +1,3 @@
-# pylint disable=C0116
-#
-# :missing-function-docstring
-import sys
 import time
 import numpy as np
 
@@ -17,10 +13,16 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
-verbose = False
-max_length = 6  # max tokens -- i.e. context window
+USE_ATTN_LAYERS = True
+VERBOSE = False
+DEBUG_ATTN = False
+MAX_INPUT_TOKENS = 6  # i.e. context window
 D_MODEL = 4  # 4
+# Final dimension of weight matrices W_q, W_k in attention heads
+# -- we can use these to project into a lower-dimensional space
+D_QK = 1
 NUM_ATTN_HEADS = 5
+NUM_ATTN_LAYERS = 3
 # True if the so-called 'FFN' layer is a genuine feedforward network
 # with two layers separated by a nonlinear activation function.
 # False if the 'FFN' layer is just a single linear module.
@@ -29,13 +31,14 @@ USE_2FFN = True
 D_FFN = 20
 
 
-learning_rate = 0.02
-num_epochs = 300
-loss_print_freq = 50
-# batch_size = 1
+LEARNING_RATE = 0.02
+NUM_EPOCHS = 300
+LOSS_PRINT_FREQ = 50
+BATCH_SIZE = 5
 THE_SEED = 42
 SAVE_ATTENTION = False
 MULTI_HEAD = True
+
 
 token_to_id = {'what': 0,
                'is': 1,
@@ -129,7 +132,7 @@ dataset = Data(inputs, labels)
 
 class PositionEncoding(nn.Module):
 
-    def __init__(self, d_model=2, max_len=6):
+    def __init__(self, d_model, max_len=6):
 
         super().__init__()
 
@@ -145,7 +148,7 @@ class PositionEncoding(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
 
         self.register_buffer('pe', pe)
-        if verbose:
+        if VERBOSE:
             print('pos encoding:', pe.data)
             print('pos encoding shape:', pe.shape)
 
@@ -171,14 +174,14 @@ class PositionEncoding(nn.Module):
 
 class AttentionHead(nn.Module):
 
-    def __init__(self, d_model=2):
+    def __init__(self, d_model, d_qk):
 
         super().__init__()
 
         self.W_q = nn.Linear(in_features=d_model,
-                             out_features=d_model, bias=False)
+                             out_features=d_qk, bias=False)
         self.W_k = nn.Linear(in_features=d_model,
-                             out_features=d_model, bias=False)
+                             out_features=d_qk, bias=False)
         self.W_v = nn.Linear(in_features=d_model,
                              out_features=d_model, bias=False)
 
@@ -190,18 +193,22 @@ class AttentionHead(nn.Module):
         self.printed_details = False
         self.saved_attention = torch.Tensor()
 
-        if verbose:
+        if VERBOSE:
             print('W_q:', self.W_q.weight.shape)
             print('W_k:', self.W_k.weight.shape)
             print('W_v:', self.W_v.weight.shape)
 
         # print('W_q vals:', self.W_q.weight)
 
-    def forward(self, encodings_for_q, encodings_for_k, encodings_for_v, mask=None):
+    def forward(self, encodings_for_q, encodings_for_k, encodings_for_v, mask):
 
         q = self.W_q(encodings_for_q)
         k = self.W_k(encodings_for_k)
         v = self.W_v(encodings_for_v)
+
+        if DEBUG_ATTN:
+            print(f'q: {q}')
+            print(f'k.size(self.col_dim): {k.size(self.col_dim)}')
 
         sims = torch.matmul(q, k.transpose(
             dim0=self.row_dim, dim1=self.col_dim))
@@ -214,7 +221,10 @@ class AttentionHead(nn.Module):
         attention_percents = F.softmax(scaled_sims, dim=self.col_dim)
         attention_scores = torch.matmul(attention_percents, v)
 
-        if verbose and not self.printed_details:
+        # if DEBUG_ATTN:
+        #     print(f'attention_percents: {attention_percents}')
+
+        if VERBOSE and not self.printed_details:
             print('encodings_for_q shape:', encodings_for_q.shape)
             print('q:', q.shape)
 
@@ -240,17 +250,22 @@ class AttentionHead(nn.Module):
 
 
 class AttentionLayer(nn.Module):
-    def __init__(self, d_model=2, num_heads=1, d_ffn=D_MODEL):
+    def __init__(self, d_model, num_heads, d_ffn, d_qk):
         super().__init__()
+
+        # attn_seed = 1234
+        # torch.manual_seed(attn_seed)
+        # print(f'torch.manual_seed with attn_seed in AttentionLayer(): {
+        #       attn_seed}')
 
         # attention head(s)
         if not MULTI_HEAD:
             print('single head')
-            self.self_attention = AttentionHead(d_model=d_model)
+            self.self_attention = AttentionHead(d_model=d_model, d_qk=d_qk)
         else:
             print(f'multihead, num_heads={NUM_ATTN_HEADS}')
             self.self_attention = MultiHeadAttention(
-                d_model=d_model, num_heads=num_heads)
+                d_model=d_model, num_heads=num_heads, d_qk=d_qk)
 
         # FFN layer
         if USE_2FFN:
@@ -259,11 +274,13 @@ class AttentionLayer(nn.Module):
             self.ffn = nn.Linear(
                 in_features=d_model, out_features=d_model)
 
-    def forward(self, encodings, mask=None):
+    def forward(self, encodings, mask):
         attention_scores = self.self_attention(
             encodings, encodings, encodings, mask)
         residual_attention_values = encodings + attention_scores
+        # print(f'residual_attention_values:\n{residual_attention_values}')
         ffn_outputs = self.ffn(residual_attention_values)
+        # print(f'ffn_outputs:\n{ffn_outputs}')
         residual_ffn_values = residual_attention_values + ffn_outputs
         # the above residuals follow equation (1) of Feng2023NeurIPS-chain-of-thought.
         # In the notation of that equation,
@@ -275,12 +292,12 @@ class AttentionLayer(nn.Module):
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, d_model=2, num_heads=1):
+    def __init__(self, d_model, num_heads, d_qk):
         super().__init__()
         self.attention_heads = nn.ModuleList()
         self.num_heads = num_heads
         for _ in range(num_heads):
-            attention_head = AttentionHead(d_model=d_model)
+            attention_head = AttentionHead(d_model=d_model, d_qk=d_qk)
             self.attention_heads.append(attention_head)
         # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2.
         # But there could be even more dims?? -2 and -1 work for this?
@@ -289,7 +306,7 @@ class MultiHeadAttention(nn.Module):
         self.printed_details = False
         self.saved_attention = torch.Tensor()
 
-    def forward(self, encodings_for_q, encodings_for_k, encodings_for_v, mask=None):
+    def forward(self, encodings_for_q, encodings_for_k, encodings_for_v, mask):
         # return self.attention_heads[0].forward(encodings_for_q, encodings_for_k, encodings_for_v, mask)
         attention_scores_tot = torch.zeros_like(encodings_for_q)
         if SAVE_ATTENTION:
@@ -319,10 +336,39 @@ class FFN_2_layer(nn.Module):
         return x
 
 
+class AttentionLayers(nn.Module):
+    def __init__(self, d_model, num_heads, d_ffn, num_attn_layers, d_qk):
+        super().__init__()
+        self.attn_layers = nn.ModuleList()
+        self.num_layers = num_attn_layers
+        for _ in range(num_attn_layers):
+            attention_layer = AttentionLayer(
+                d_model=d_model, num_heads=num_heads, d_ffn=d_ffn, d_qk=d_qk)
+            self.attn_layers.append(attention_layer)
+
+    def forward(self, encodings, mask):
+        output = encodings
+        for attn_layer in self.attn_layers:
+            output = attn_layer(output, mask)
+        return output
+
+
+def compare_attn_outputs(attn_output: torch.Tensor, attn_output2: torch.Tensor):
+    with torch.no_grad():
+        diff = attn_output2 - attn_output
+        if torch.any(diff != 0.0) or attn_output.shape != attn_output2.shape:
+            print('attns differ')
+            print(f'attn_output: {attn_output}')
+            print(f'attn_output2: {attn_output2}')
+            pass
+        # else:
+        #     print('SAME attns')
+
+
 class DecoderOnlyTransformer(nn.Module):
     # class DecoderOnlyTransformer(L.LightningModule):
 
-    def __init__(self, num_tokens=4, d_model=2, max_len=6):
+    def __init__(self, num_tokens, d_model, max_len):
 
         super().__init__()
 
@@ -350,8 +396,13 @@ class DecoderOnlyTransformer(nn.Module):
         #     self.fc_layer = nn.Linear(
         #         in_features=d_model, out_features=d_model)
 
-        self.attn_layer = AttentionLayer(
-            d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN)
+        if not USE_ATTN_LAYERS:
+            self.attn_layer = AttentionLayer(
+                d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN, d_qk=D_QK)
+        else:
+            self.attn_layer = AttentionLayers(
+                d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN,
+                num_attn_layers=NUM_ATTN_LAYERS, d_qk=D_QK)
 
         # final FC for token classification (outputs logits)
         self.tok_classifier = nn.Linear(
@@ -362,12 +413,19 @@ class DecoderOnlyTransformer(nn.Module):
         self.saved_token_IDs = torch.Tensor()
 
         self.printed_mask = False
-        if verbose:
+        if VERBOSE:
             print('we:', self.we.weight.shape)
             print('pe:', self.pe.pe.shape)
             # print('fc_layer:', self.fc_layer.weight.shape)
 
+        # count number of forward() calls, for debugging
+        self.forward_counter = 0
+
     def forward(self, token_ids):
+        # global DEBUG_ATTN
+        # self.forward_counter += 1
+        # if self.forward_counter == 3:
+        #     DEBUG_ATTN = True
         if SAVE_ATTENTION:
             self.saved_token_IDs = token_ids
 
@@ -377,7 +435,7 @@ class DecoderOnlyTransformer(nn.Module):
         mask = torch.tril(torch.ones(
             (token_ids.size(dim=-1), token_ids.size(dim=-1)), device=device))
         mask = mask == 0
-        if verbose and not self.printed_mask:
+        if VERBOSE and not self.printed_mask:
             print('mask:', mask.data)
             print('mask shape:', mask.shape)
             self.printed_mask = True
@@ -392,7 +450,16 @@ class DecoderOnlyTransformer(nn.Module):
         # residual_connection_values = position_encoded + self_attention_values
         # fc_layer_output = self.fc_layer(residual_connection_values)
 
+        # print(f'\nDecoderOnlyTransformer.forward(), ' +
+        #       f'execution {self.forward_counter}')
+        # print('\n\nWithout attn_layers...')
         attn_output = self.attn_layer(position_encoded, mask)
+        # print(f'attn_output: {attn_output}')
+        # print('\n\nWith attn_layers...')
+        # attn_output2 = self.attn_layers(position_encoded, mask)
+        # print(f'attn_output2: {attn_output2}')
+
+        # compare_attn_outputs(attn_output, attn_output2)
 
         # residual_output = position_encoded + attn_output
         # tok_class_output = self.tok_classifier(residual_output)
@@ -404,7 +471,7 @@ class DecoderOnlyTransformer(nn.Module):
         return self.self_attention.saved_attention
 
     def configure_optimizers(self):
-        return Adam(self.parameters(), lr=learning_rate)
+        return Adam(self.parameters(), lr=LEARNING_RATE)
 
     def training_step(self, batch, batch_idx):
         input_tokens, labels = batch  # collect input
@@ -533,9 +600,9 @@ def do_epoch(model, optimizer, dataloader, print_loss=False):
 def do_epochs(model, optimizer, dataloader):
     model.train()
     start_time = time.time()
-    for epoch in range(num_epochs):
+    for epoch in range(NUM_EPOCHS):
         total_loss = do_epoch(model, optimizer, dataloader)
-        if (epoch+1) % loss_print_freq == 0 or epoch == 0 or epoch == num_epochs-1:
+        if (epoch+1) % LOSS_PRINT_FREQ == 0 or epoch == 0 or epoch == NUM_EPOCHS-1:
             avg_loss = total_loss / len(dataloader.dataset)
             print(f'epoch: {epoch}, avg_loss: {avg_loss:.5f}')
     end_time = time.time()
@@ -549,10 +616,10 @@ def create_model(batch_size):
     print(f'torch.manual_seed: {THE_SEED}')
 
     model = DecoderOnlyTransformer(num_tokens=len(
-        token_to_id), d_model=D_MODEL, max_len=max_length)
+        token_to_id), d_model=D_MODEL, max_len=MAX_INPUT_TOKENS)
     model.to(device)
     model.train()
-    optimizer = Adam(model.parameters(), lr=learning_rate)
+    optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
     dataloader = DataLoader(dataset, batch_size=batch_size)
     return model, optimizer, dataloader
 
@@ -660,20 +727,40 @@ def multi_count_response_errors(batch_size, num_trials):
     # print_params(model)
 
 
-def print_gradients(model):
+def print_gradients(model: nn.Module):
     for name, param in model.named_parameters():
         if param.grad is not None:
-            print(f"Gradient of {name}: {param.grad}")
+            print(f"Gradient of {name}:\n{param.grad}")
         else:
-            print(f"Gradient of {name}: Not available")
+            print(f"Gradient of {name}:\nNot available")
 
 
-def print_params(model):
+def print_params(model: nn.Module):
     for name, param in model.named_parameters():
-        print(f"{name}: {param.data}")
+        print(f"{name}:\n{param.data}")
 
 
 def main():
+
+    global USE_ATTN_LAYERS
+    for USE_ATTN_LAYERS in (False, True):
+        model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
+        do_epochs(model, optimizer, dataloader)
+        response_errs = count_errors(
+            model, dataloader, response_errs_only=True)
+        print(f'response_errs: {response_errs}')
+    #    print_params(model)
+
+    # print('single training step')
+    # for step, (X, y) in enumerate(dataloader):
+    #     print(f'training step {step}')
+    #     do_training_step(model, optimizer, X, y, print_loss=True)
+    #     print_gradients(model)
+    #     if step > 10:
+    #         break
+
+    return
+
     # batch_size = 1
     # global MULTI_HEAD
     # for MULTI_HEAD in True, False:
@@ -691,9 +778,12 @@ def main():
 
     # return
 
-    global MULTI_HEAD
-    for MULTI_HEAD in (True, ):
-        multi_count_response_errors(batch_size=5, num_trials=2)
+    # global MULTI_HEAD
+    # for MULTI_HEAD in (True, ):
+    #     multi_count_response_errors(batch_size=5, num_trials=2)
+    # return
+
+    multi_count_response_errors(batch_size=BATCH_SIZE, num_trials=2)
     return
 
     batch_sizes = [5]
@@ -730,7 +820,7 @@ def main():
                   f'batch size {dataloader.batch_size}')
             for in_str in in_strs:
                 model_input = input_to_tensor(in_str)
-                pred_tokens = predict(model, model_input, max_length)
+                pred_tokens = predict(model, model_input, MAX_INPUT_TOKENS)
                 print(in_str, ' -> ', ' '.join(pred_tokens))
             count_errors(model, dataloader, print_errs=True,
                          response_errs_only=True)
