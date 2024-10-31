@@ -21,6 +21,9 @@ D_MODEL = 4  # 4
 # Final dimension of weight matrices W_q, W_k in attention heads
 # -- we can use these to project into a lower-dimensional space
 D_QK = 1
+# Final dimension of weight matrix W_v in attention heads and first dim of W_o
+# ("values" and "outputs" matrices)
+D_VO = 1
 NUM_ATTN_HEADS = 5
 NUM_ATTN_LAYERS = 3
 # True if the so-called 'FFN' layer is a genuine feedforward network
@@ -174,7 +177,7 @@ class PositionEncoding(nn.Module):
 
 class AttentionHead(nn.Module):
 
-    def __init__(self, d_model, d_qk):
+    def __init__(self, d_model, d_qk, d_vo):
 
         super().__init__()
 
@@ -183,6 +186,8 @@ class AttentionHead(nn.Module):
         self.W_k = nn.Linear(in_features=d_model,
                              out_features=d_qk, bias=False)
         self.W_v = nn.Linear(in_features=d_model,
+                             out_features=d_vo, bias=False)
+        self.W_o = nn.Linear(in_features=d_vo,
                              out_features=d_model, bias=False)
 
         # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2.
@@ -197,6 +202,7 @@ class AttentionHead(nn.Module):
             print('W_q:', self.W_q.weight.shape)
             print('W_k:', self.W_k.weight.shape)
             print('W_v:', self.W_v.weight.shape)
+            print('W_o:', self.W_o.weight.shape)
 
         # print('W_q vals:', self.W_q.weight)
 
@@ -220,6 +226,7 @@ class AttentionHead(nn.Module):
 
         attention_percents = F.softmax(scaled_sims, dim=self.col_dim)
         attention_scores = torch.matmul(attention_percents, v)
+        attention_outputs = self.W_o(attention_scores)
 
         # if DEBUG_ATTN:
         #     print(f'attention_percents: {attention_percents}')
@@ -246,11 +253,11 @@ class AttentionHead(nn.Module):
         # if torch.rand(1).item() < 0.002:
         #     print(rounded_tensor_to_str(attention_percents))
 
-        return attention_scores
+        return attention_outputs
 
 
 class AttentionLayer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ffn, d_qk):
+    def __init__(self, d_model, num_heads, d_ffn, d_qk, d_vo):
         super().__init__()
 
         # attn_seed = 1234
@@ -261,11 +268,12 @@ class AttentionLayer(nn.Module):
         # attention head(s)
         if not MULTI_HEAD:
             print('single head')
-            self.self_attention = AttentionHead(d_model=d_model, d_qk=d_qk)
+            self.self_attention = AttentionHead(
+                d_model=d_model, d_qk=d_qk, d_vo=d_vo)
         else:
             print(f'multihead, num_heads={NUM_ATTN_HEADS}')
             self.self_attention = MultiHeadAttention(
-                d_model=d_model, num_heads=num_heads, d_qk=d_qk)
+                d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo)
 
         # FFN layer
         if USE_2FFN:
@@ -292,12 +300,13 @@ class AttentionLayer(nn.Module):
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, d_model, num_heads, d_qk):
+    def __init__(self, d_model, num_heads, d_qk, d_vo):
         super().__init__()
         self.attention_heads = nn.ModuleList()
         self.num_heads = num_heads
         for _ in range(num_heads):
-            attention_head = AttentionHead(d_model=d_model, d_qk=d_qk)
+            attention_head = AttentionHead(
+                d_model=d_model, d_qk=d_qk, d_vo=d_vo)
             self.attention_heads.append(attention_head)
         # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2.
         # But there could be even more dims?? -2 and -1 work for this?
@@ -337,13 +346,13 @@ class FFN_2_layer(nn.Module):
 
 
 class AttentionLayers(nn.Module):
-    def __init__(self, d_model, num_heads, d_ffn, num_attn_layers, d_qk):
+    def __init__(self, d_model, num_heads, d_ffn, num_attn_layers, d_qk, d_vo):
         super().__init__()
         self.attn_layers = nn.ModuleList()
         self.num_layers = num_attn_layers
         for _ in range(num_attn_layers):
             attention_layer = AttentionLayer(
-                d_model=d_model, num_heads=num_heads, d_ffn=d_ffn, d_qk=d_qk)
+                d_model=d_model, num_heads=num_heads, d_ffn=d_ffn, d_qk=d_qk, d_vo=d_vo)
             self.attn_layers.append(attention_layer)
 
     def forward(self, encodings, mask):
@@ -398,11 +407,11 @@ class DecoderOnlyTransformer(nn.Module):
 
         if not USE_ATTN_LAYERS:
             self.attn_layer = AttentionLayer(
-                d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN, d_qk=D_QK)
+                d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN, d_qk=D_QK, d_vo=D_VO)
         else:
             self.attn_layer = AttentionLayers(
                 d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN,
-                num_attn_layers=NUM_ATTN_LAYERS, d_qk=D_QK)
+                num_attn_layers=NUM_ATTN_LAYERS, d_qk=D_QK, d_vo=D_VO)
 
         # final FC for token classification (outputs logits)
         self.tok_classifier = nn.Linear(
@@ -452,17 +461,10 @@ class DecoderOnlyTransformer(nn.Module):
 
         # print(f'\nDecoderOnlyTransformer.forward(), ' +
         #       f'execution {self.forward_counter}')
-        # print('\n\nWithout attn_layers...')
+
         attn_output = self.attn_layer(position_encoded, mask)
         # print(f'attn_output: {attn_output}')
-        # print('\n\nWith attn_layers...')
-        # attn_output2 = self.attn_layers(position_encoded, mask)
-        # print(f'attn_output2: {attn_output2}')
 
-        # compare_attn_outputs(attn_output, attn_output2)
-
-        # residual_output = position_encoded + attn_output
-        # tok_class_output = self.tok_classifier(residual_output)
         tok_class_output = self.tok_classifier(attn_output)
 
         return tok_class_output
@@ -749,14 +751,15 @@ def main():
         response_errs = count_errors(
             model, dataloader, response_errs_only=True)
         print(f'response_errs: {response_errs}')
-    #    print_params(model)
 
     # print('single training step')
+    # model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
     # for step, (X, y) in enumerate(dataloader):
     #     print(f'training step {step}')
     #     do_training_step(model, optimizer, X, y, print_loss=True)
+    #     print_params(model)
     #     print_gradients(model)
-    #     if step > 10:
+    #     if step > 3:
     #         break
 
     return
