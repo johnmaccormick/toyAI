@@ -13,23 +13,30 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
-USE_ATTN_LAYERS = True
+# debugging
 VERBOSE = False
 DEBUG_ATTN = False
+SAVE_ATTENTION = False
+
+ATTN_HEAD_CONFIG = 'single'  # 'single', 'multi', 'multicompact'
+
+USE_ATTN_LAYERS = False
+
+
 MAX_INPUT_TOKENS = 6  # i.e. context window
-D_MODEL = 4  # 4
+D_MODEL = 2  # 4
 # Final dimension of weight matrices W_q, W_k in attention heads
 # -- we can use these to project into a lower-dimensional space
 D_QK = 1
 # Final dimension of weight matrix W_v in attention heads and first dim of W_o
 # ("values" and "outputs" matrices)
 D_VO = 1
-NUM_ATTN_HEADS = 5
+NUM_ATTN_HEADS = 1
 NUM_ATTN_LAYERS = 3
 # True if the so-called 'FFN' layer is a genuine feedforward network
 # with two layers separated by a nonlinear activation function.
 # False if the 'FFN' layer is just a single linear module.
-USE_2FFN = True
+USE_2FFN = False
 # Number of nodes in the middle part of the two-layer FFN (if used)
 D_FFN = 20
 
@@ -37,10 +44,8 @@ D_FFN = 20
 LEARNING_RATE = 0.02
 NUM_EPOCHS = 300
 LOSS_PRINT_FREQ = 50
-BATCH_SIZE = 5
+BATCH_SIZE = 1
 THE_SEED = 42
-SAVE_ATTENTION = False
-MULTI_HEAD = True
 
 
 token_to_id = {'what': 0,
@@ -266,15 +271,21 @@ class AttentionLayer(nn.Module):
         #       attn_seed}')
 
         # attention head(s)
-        if not MULTI_HEAD:
+        # 'single', 'multi', 'multicompact'
+        if ATTN_HEAD_CONFIG == 'single':
             print('single head')
             self.self_attention = AttentionHead(
                 d_model=d_model, d_qk=d_qk, d_vo=d_vo)
-        else:
-            print(f'multihead, num_heads={NUM_ATTN_HEADS}')
+        elif ATTN_HEAD_CONFIG == 'multi':
+            print(f'multihead, num_heads={num_heads}')
             self.self_attention = MultiHeadAttention(
                 d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo)
-
+        elif ATTN_HEAD_CONFIG == 'multicompact':
+            print(f'compact multihead, num_heads={num_heads}')
+            self.self_attention = MultiAttentionHeadCompact(
+                d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo)
+        else:
+            assert False
         # FFN layer
         if USE_2FFN:
             self.ffn = FFN_2_layer(d_model, d_ffn, d_model)
@@ -296,6 +307,111 @@ class AttentionLayer(nn.Module):
         # and
         # residual_ffn_values is X^{l}
         return residual_ffn_values
+
+
+class MultiAttentionHeadCompact(nn.Module):
+
+    def __init__(self, d_model, num_heads, d_qk, d_vo):
+
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_qk = d_qk
+        self.d_vo = d_vo
+        self.width_qk = num_heads*d_qk
+        self.height_vo = num_heads*d_vo
+
+        self.W_q = nn.Linear(in_features=d_model,
+                             out_features=self.width_qk, bias=False)
+        self.W_k = nn.Linear(in_features=d_model,
+                             out_features=self.width_qk, bias=False)
+        self.W_v = nn.Linear(in_features=d_model,
+                             out_features=num_heads*d_vo, bias=False)
+        self.W_o = nn.Linear(in_features=self.height_vo,
+                             out_features=d_model, bias=False)
+
+        # e.g. when 4 dims, dim 0 is for batch, dim 1 for head_ID. row is 2, col is 3.
+        # But there could be even more dims?? -3, -2 and -1 work for this?
+        self.head_dim = -3
+        self.row_dim = -2
+        self.col_dim = -1
+
+        self.printed_details = False
+        self.saved_attention = torch.Tensor()
+
+        if VERBOSE:
+            print('W_q:', self.W_q.weight.shape)
+            print('W_k:', self.W_k.weight.shape)
+            print('W_v:', self.W_v.weight.shape)
+            print('W_o:', self.W_o.weight.shape)
+
+            # print('W_q vals:', self.W_q.weight)
+
+    def unflatten_head_vals(self, vals: torch.Tensor, n, H, d):
+        return vals.view(-1, n, H, d).transpose(dim0=1, dim1=2)
+
+    def flatten_head_vals(self, vals: torch.Tensor, n, H, d):
+        return vals.transpose(dim0=1, dim1=2).view(-1, n, H*d).squeeze(0)
+
+    def forward(self, encodings_for_q: torch.Tensor,
+                encodings_for_k: torch.Tensor,
+                encodings_for_v: torch.Tensor,
+                mask: torch.Tensor):
+
+        q = self.W_q(encodings_for_q)
+        k = self.W_k(encodings_for_k)
+        v = self.W_v(encodings_for_v)
+
+        num_inputs = encodings_for_q.shape[0]
+        q = self.unflatten_head_vals(q, num_inputs, self.num_heads, self.d_qk)
+        k = self.unflatten_head_vals(k, num_inputs, self.num_heads, self.d_qk)
+        v = self.unflatten_head_vals(v, num_inputs, self.num_heads, self.d_vo)
+
+        if DEBUG_ATTN:
+            print(f'q: {q}')
+            print(f'k.size(self.col_dim): {k.size(self.col_dim)}')
+            assert k.size(self.col_dim) == self.d_qk
+
+        sims = torch.matmul(q, k.transpose(
+            dim0=self.row_dim, dim1=self.col_dim))
+
+        scaled_sims = sims / torch.tensor(self.d_qk**0.5)
+
+        if mask is not None:
+            scaled_sims = scaled_sims.masked_fill(mask=mask, value=-1e9)
+
+        attention_percents = F.softmax(scaled_sims, dim=self.col_dim)
+        attention_scores = torch.matmul(attention_percents, v)
+        attention_scores_unstacked = self.flatten_head_vals(
+            attention_scores, num_inputs, self.num_heads, self.d_vo)
+        attention_outputs = self.W_o(attention_scores_unstacked)
+
+        # if DEBUG_ATTN:
+        #     print(f'attention_percents: {attention_percents}')
+
+        if VERBOSE and not self.printed_details:
+            print('encodings_for_q shape:', encodings_for_q.shape)
+            print('q:', q.shape)
+
+            print('k:', k.shape)
+            print('v:', v.shape)
+            print('sims:', sims)
+            print('sims shape:', sims.data.shape)
+            print('scaled_sims:', scaled_sims)
+            print('scaled sims shape:', scaled_sims.data.shape)
+            print('attention_percents:', attention_percents.data)
+            print('attention_percents shape:', attention_percents.data.shape)
+            print('attention_scores:', attention_scores.data)
+            print('attention_scores shape:', attention_scores.data.shape)
+            self.printed_details = True
+
+        if SAVE_ATTENTION:
+            self.saved_attention = attention_percents
+
+        # if torch.rand(1).item() < 0.002:
+        #     print(rounded_tensor_to_str(attention_percents))
+
+        return attention_outputs
 
 
 class MultiHeadAttention(nn.Module):
@@ -384,6 +500,7 @@ class DecoderOnlyTransformer(nn.Module):
         # token embedding
         self.we = nn.Embedding(num_embeddings=num_tokens,
                                embedding_dim=d_model)
+        # print(f'self.we.weight.data:\n{self.we.weight.data}')
 
         # position encoding
         self.pe = PositionEncoding(d_model=d_model,
@@ -744,23 +861,37 @@ def print_params(model: nn.Module):
 
 def main():
 
-    global USE_ATTN_LAYERS
-    for USE_ATTN_LAYERS in (False, True):
-        model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
-        do_epochs(model, optimizer, dataloader)
-        response_errs = count_errors(
-            model, dataloader, response_errs_only=True)
-        print(f'response_errs: {response_errs}')
+    # global USE_ATTN_LAYERS
+    # for USE_ATTN_LAYERS in (False, True):
+    #     model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
+    #     do_epochs(model, optimizer, dataloader)
+    #     response_errs = count_errors(
+    #         model, dataloader, response_errs_only=True)
+    #     print(f'response_errs: {response_errs}')
+
+    global ATTN_HEAD_CONFIG
+    # ('single', 'multi', 'multicompact')
+    # for ATTN_HEAD_CONFIG in ('single', 'multicompact'):
+    #     model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
+    # do_epochs(model, optimizer, dataloader)
+    # response_errs = count_errors(
+    #     model, dataloader, response_errs_only=True)
+    # print(f'response_errs: {response_errs}')
 
     # print('single training step')
-    # model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
-    # for step, (X, y) in enumerate(dataloader):
-    #     print(f'training step {step}')
-    #     do_training_step(model, optimizer, X, y, print_loss=True)
-    #     print_params(model)
-    #     print_gradients(model)
-    #     if step > 3:
-    #         break
+    # # ATTN_HEAD_CONFIG = 'single'
+    ATTN_HEAD_CONFIG = 'multicompact'
+    max_steps = 1
+    for ATTN_HEAD_CONFIG in ('single', 'multicompact'):
+        model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
+        print('before first training step...')
+        for step, (X, y) in enumerate(dataloader):
+            print_params(model)
+            print_gradients(model)
+            if step >= max_steps:
+                break
+            print(f'training step {step}...')
+            do_training_step(model, optimizer, X, y, print_loss=True)
 
     return
 
