@@ -9,13 +9,15 @@ import torch.nn as nn  # torch.nn gives us nn.Module(), nn.Embedding() and nn.Li
 import torch  # torch let's us create tensors and also provides helper functions
 import torch.nn.functional as F  # This gives us the softmax() and argmax()
 
+from jm_util import Saver
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
 # debugging
-VERBOSE = False
-DEBUG_ATTN = False
+VERBOSE = True
+DEBUG_ATTN = True
 SAVE_ATTENTION = False
 
 ATTN_HEAD_CONFIG = 'single'  # 'single', 'multi', 'multicompact'
@@ -43,7 +45,7 @@ D_FFN = 20
 
 LEARNING_RATE = 0.02
 NUM_EPOCHS = 300
-LOSS_PRINT_FREQ = 50
+LOSS_PRINT_FREQ = 1  # 50
 BATCH_SIZE = 1
 THE_SEED = 42
 
@@ -119,6 +121,8 @@ labels = [input_to_tensor(advanced_input)
 
 add_padding(inputs)
 add_padding(labels)
+
+SAVER = Saver()
 
 
 class Data(Dataset):
@@ -219,19 +223,36 @@ class AttentionHead(nn.Module):
 
         if DEBUG_ATTN:
             print(f'q: {q}')
+            print(f'k: {k}')
+            print(f'v: {v}')
             print(f'k.size(self.col_dim): {k.size(self.col_dim)}')
 
         sims = torch.matmul(q, k.transpose(
             dim0=self.row_dim, dim1=self.col_dim))
 
+        print(f'sims: {sims}')
+
         scaled_sims = sims / torch.tensor(k.size(self.col_dim)**0.5)
+        print(f'scaled_sims: {scaled_sims}')
 
         if mask is not None:
             scaled_sims = scaled_sims.masked_fill(mask=mask, value=-1e9)
+        print(f'masked scaled_sims: {scaled_sims}')
 
         attention_percents = F.softmax(scaled_sims, dim=self.col_dim)
+        print(f'attention_percents: {attention_percents}')
+        print(f'attention_percents.dtype: {attention_percents.dtype}')
+        print(f'v: {v}')
+        print(f'v.dtype: {v.dtype}')
         attention_scores = torch.matmul(attention_percents, v)
+        # *********** difference observed here
+        print(f'attention_scores: {attention_scores}')
+        print(f'attention_scores.dtype: {attention_scores.dtype}')
+        SAVER.save_tensors({'p': attention_percents, 'v': v,
+                           's': attention_scores}, 'single')
         attention_outputs = self.W_o(attention_scores)
+        print(f'attention_outputs: {attention_outputs}')
+        print(f'attention_outputs.dtype: {attention_outputs.dtype}')
 
         # if DEBUG_ATTN:
         #     print(f'attention_percents: {attention_percents}')
@@ -294,8 +315,12 @@ class AttentionLayer(nn.Module):
                 in_features=d_model, out_features=d_model)
 
     def forward(self, encodings, mask):
+        print('AttentionLayer.forward: before self_attention')
+        print(f'encodings: {encodings}')
         attention_scores = self.self_attention(
             encodings, encodings, encodings, mask)
+        print('AttentionLayer.forward: after self_attention')
+        print(f'attention_scores: {attention_scores}')
         residual_attention_values = encodings + attention_scores
         # print(f'residual_attention_values:\n{residual_attention_values}')
         ffn_outputs = self.ffn(residual_attention_values)
@@ -369,24 +394,40 @@ class MultiAttentionHeadCompact(nn.Module):
 
         if DEBUG_ATTN:
             print(f'q: {q}')
+            print(f'k: {k}')
+            print(f'v: {v}')
             print(f'k.size(self.col_dim): {k.size(self.col_dim)}')
             assert k.size(self.col_dim) == self.d_qk
 
         sims = torch.matmul(q, k.transpose(
             dim0=self.row_dim, dim1=self.col_dim))
 
+        print(f'sims: {sims}')
+
         scaled_sims = sims / torch.tensor(self.d_qk**0.5)
+        print(f'scaled_sims: {scaled_sims}')
 
         if mask is not None:
             scaled_sims = scaled_sims.masked_fill(mask=mask, value=-1e9)
+        print(f'masked scaled_sims: {scaled_sims}')
 
         attention_percents = F.softmax(scaled_sims, dim=self.col_dim)
+        print(f'attention_percents: {attention_percents}')
+        print(f'attention_percents.dtype: {attention_percents.dtype}')
+        print(f'v: {v}')
+        print(f'v.dtype: {v.dtype}')
         attention_scores = torch.matmul(attention_percents, v)
+        print(f'attention_scores: {attention_scores}')
+        print(f'attention_scores.dtype: {attention_scores.dtype}')
         attention_scores_unstacked = self.flatten_head_vals(
             attention_scores, num_inputs, self.num_heads, self.d_vo)
+        # *********** difference observed here
         attention_outputs = self.W_o(attention_scores_unstacked)
-
-        # if DEBUG_ATTN:
+        print(f'attention_outputs: {attention_outputs}')
+        print(f'attention_outputs.dtype: {attention_outputs.dtype}')
+        SAVER.save_tensors({'p': attention_percents, 'v': v,
+                           's': attention_scores}, 'compact')
+# if DEBUG_ATTN:
         #     print(f'attention_percents: {attention_percents}')
 
         if VERBOSE and not self.printed_details:
@@ -579,8 +620,13 @@ class DecoderOnlyTransformer(nn.Module):
         # print(f'\nDecoderOnlyTransformer.forward(), ' +
         #       f'execution {self.forward_counter}')
 
+        print('before attn layer')
+        print(f'position_encoded: {position_encoded}')
+        print(f'mask: {mask}')
+
         attn_output = self.attn_layer(position_encoded, mask)
-        # print(f'attn_output: {attn_output}')
+        print('after attn layer')
+        print(f'attn_output: {attn_output}')
 
         tok_class_output = self.tok_classifier(attn_output)
 
@@ -687,11 +733,24 @@ def do_training_step(model, optimizer, X, y, print_loss=False):
     y_orig = y
     X = X.squeeze(0)
     y = y.squeeze(0).to(device)
+    # print('about to calc y_pred')
+    # print(f'X {X}')
+    # print(f'y {y}')
     y_pred = model(X.to(device))
-    # print(f'y_pred {y_pred}')
+    print('applied model and returned y_pred')
+    print(f'y_pred {y_pred}')
     y_pred, loss = calc_pred_and_loss(model, X, y)
+    # print('calculated loss, about to zero grad')
+    # print(f'y_pred {y_pred}')
+    # print(f'loss {loss}')
     optimizer.zero_grad()
+    # print(f"did zero_grad, params:")
+    # print_params(model)
+    # print_gradients(model)
     loss.backward()
+    # print(f"did loss.backward(), params:")
+    # print_params(model)
+    # print_gradients(model)
     optimizer.step()
     # print(loss.item())
     # I believe the cross entropy loss will compute the average loss,
@@ -882,10 +941,12 @@ def main():
     # # ATTN_HEAD_CONFIG = 'single'
     ATTN_HEAD_CONFIG = 'multicompact'
     max_steps = 1
+    torch.set_printoptions(precision=20)
     for ATTN_HEAD_CONFIG in ('single', 'multicompact'):
         model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
         print('before first training step...')
         for step, (X, y) in enumerate(dataloader):
+            print(f"starting step {step}, params:")
             print_params(model)
             print_gradients(model)
             if step >= max_steps:

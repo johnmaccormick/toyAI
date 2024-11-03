@@ -1,4 +1,7 @@
+__pycache__/
 venv/
 lightning_logs/
 .vscode/
 old/
+temp/
+blat*.txt*
