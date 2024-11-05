@@ -45,7 +45,7 @@ D_FFN = 20
 
 LEARNING_RATE = 0.02
 NUM_EPOCHS = 300
-LOSS_PRINT_FREQ = 50  # 50
+LOSS_PRINT_FREQ = 50
 BATCH_SIZE = 5
 THE_SEED = 42
 
@@ -848,6 +848,8 @@ def do_epochs(model, optimizer, dataloader):
     end_time = time.time()
     training_time = end_time - start_time
     print(f"Training time: {training_time:.2f} seconds")
+    avg_loss = total_loss / len(dataloader.dataset)
+    return avg_loss
 
 
 def create_model(batch_size):
