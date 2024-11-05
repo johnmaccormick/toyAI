@@ -9,7 +9,7 @@ import torch.nn as nn  # torch.nn gives us nn.Module(), nn.Embedding() and nn.Li
 import torch  # torch let's us create tensors and also provides helper functions
 import torch.nn.functional as F  # This gives us the softmax() and argmax()
 
-from jm_util import Saver
+# from jm_util import Saver
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -122,7 +122,7 @@ labels = [input_to_tensor(advanced_input)
 add_padding(inputs)
 add_padding(labels)
 
-SAVER = Saver()
+# SAVER = Saver()
 
 
 class Data(Dataset):
@@ -183,6 +183,7 @@ class PositionEncoding(nn.Module):
 
     def forward(self, word_embeddings):
         # word_embeddings dims are: batch, token_pos, embed_dim
+        # assert word_embeddings.ndim == 3
         # crop to length of input
         pe_crop = self.pe[:word_embeddings.size(-2), :]
         # print(f'pe.shape {self.pe.shape}')
@@ -275,8 +276,8 @@ class AttentionHead(nn.Module):
             print(f'attention_scores: {attention_scores}')
         if VERBOSE:
             print(f'attention_scores.dtype: {attention_scores.dtype}')
-        SAVER.save_tensors({'p': attention_percents, 'v': v,
-                           's': attention_scores}, 'single')
+        # SAVER.save_tensors({'p': attention_percents, 'v': v,
+        #                    's': attention_scores}, 'single')
         attention_outputs = self.W_o(attention_scores)
         if VERBOSE:
             print(f'attention_outputs: {attention_outputs}')
@@ -475,8 +476,8 @@ class MultiAttentionHeadCompact(nn.Module):
         if VERBOSE:
             print(f'attention_outputs: {attention_outputs}')
             print(f'attention_outputs.dtype: {attention_outputs.dtype}')
-        SAVER.save_tensors({'p': attention_percents, 'v': v,
-                           's': attention_scores}, 'compact')
+        # SAVER.save_tensors({'p': attention_percents, 'v': v,
+        #                    's': attention_scores}, 'compact')
 # if DEBUG_ATTN:
         #     print(f'attention_percents: {attention_percents}')
 
@@ -985,6 +986,25 @@ def print_params(model: nn.Module):
 
 
 def main():
+    global ATTN_HEAD_CONFIG, BATCH_SIZE, USE_ATTN_LAYERS, USE_2FFN
+    for ATTN_HEAD_CONFIG in ['single', 'multi', 'multicompact']:
+        for BATCH_SIZE in [1, 5]:
+            for USE_ATTN_LAYERS in [False, True]:
+                for USE_2FFN in [False, True]:
+                    max_steps = 3
+                    model, optimizer, dataloader = create_model(
+                        batch_size=BATCH_SIZE)
+                    for step, (X, y) in enumerate(dataloader):
+                        # print(f"starting step {step}, params:")
+                        # print_params(model)
+                        # print_gradients(model)
+                        if step >= max_steps:
+                            break
+                        # print(f'training step {step}...')
+                        do_training_step(model, optimizer,
+                                         X, y, print_loss=False)
+
+    return
 
     # global USE_ATTN_LAYERS
     # for USE_ATTN_LAYERS in (False, True):
@@ -994,6 +1014,8 @@ def main():
     #         model, dataloader, response_errs_only=True)
     #     print(f'response_errs: {response_errs}')
 
+
+def main2():
     global ATTN_HEAD_CONFIG
     # ('single', 'multi', 'multicompact')
     for ATTN_HEAD_CONFIG in ('multi', 'multicompact', ):
