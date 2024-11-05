@@ -3,10 +3,9 @@ import os
 
 import torch
 
-# written by colab AI
-
 
 def delete_directory_contents(directory_path):
+    # written by colab AI
     """Deletes the contents of a directory.
 
     Args:
