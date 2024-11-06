@@ -11,8 +11,8 @@ import torch.nn.functional as F  # This gives us the softmax() and argmax()
 
 # from jm_util import Saver
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {DEVICE}")
 
 
 # debugging
@@ -26,13 +26,13 @@ USE_ATTN_LAYERS = False
 
 
 MAX_INPUT_TOKENS = 6  # i.e. context window
-D_MODEL = 2  # 4
+D_MODEL = 10  # 4
 # Final dimension of weight matrices W_q, W_k in attention heads
 # -- we can use these to project into a lower-dimensional space
-D_QK = 1
+D_QK = 9
 # Final dimension of weight matrix W_v in attention heads and first dim of W_o
 # ("values" and "outputs" matrices)
-D_VO = 1
+D_VO = 8
 NUM_ATTN_HEADS = 1
 NUM_ATTN_LAYERS = 3
 # True if the so-called 'FFN' layer is a genuine feedforward network
@@ -62,6 +62,7 @@ token_to_id = {'what': 0,
                'fruit': 9,
                '<PAD>': 10,
                }
+VOCAB_SIZE = len(token_to_id)
 id_to_token = dict(map(reversed, token_to_id.items()))
 
 pad_idx = token_to_id['<PAD>']
@@ -159,6 +160,64 @@ def prepend_singleton_dims(tensor, target_dims):
         return tensor
 
 
+class DimInfo:
+    """This class carries around information about dimensions in the model. 
+    It should only be used for debugging and assertions. It is not thread safe. 
+    It is used as a singleton class, but I can imagine situations where batches 
+    with different numbers of inputs are running simultaneously in different threads, 
+    and various other similar problems."""
+
+    def __init__(self, this_batch_size=-1, num_inputs=-1, d_model=-1, d_ffn=-1, d_qk=-1, d_vo=-1):
+        # Similar comments to self.num_inputs apply here (see below).
+        # This records the batch size of the latest batch, which might not always
+        # be equal to the requested batch size (e.g. the last few instances in a data set).
+        self.this_batch_size = this_batch_size
+        # On any given forward or backward pass, this records the number of
+        # tokens that were in the input. (Typically, if there is a batch of inputs,
+        # they are padded so that the length of all inputs is the same as the maximum.)
+        # This value is initialized to -1, but typically it will store the number of
+        # tokens and put in the most recent (or current) call to forward().
+        self.num_inputs = num_inputs
+        # number of dims in token embeddings
+        self.d_model = d_model
+        self.d_ffn = d_ffn
+        self.d_qk = d_qk
+        self.d_vo = d_vo
+
+    def check_encoding_shape(self, t: torch.Tensor):
+        assert t.shape == (self.this_batch_size, self.num_inputs, self.d_model)
+
+    def check_qk_shape(self, t: torch.Tensor):
+        assert t.shape == (self.this_batch_size, self.num_inputs, self.d_qk)
+
+    def check_v_shape(self, t: torch.Tensor):
+        assert t.shape == (self.this_batch_size, self.num_inputs, self.d_vo)
+
+    def check_attn_shape(self, t: torch.Tensor):
+        assert t.shape == (self.this_batch_size,
+                           self.num_inputs, self.num_inputs)
+
+    def check_qk_shape_multi(self, t: torch.Tensor, num_heads):
+        assert t.shape == (self.this_batch_size,
+                           self.num_inputs, num_heads * self.d_qk)
+
+    def check_v_shape_multi(self, t: torch.Tensor, num_heads):
+        assert t.shape == (self.this_batch_size,
+                           self.num_inputs, num_heads * self.d_vo)
+
+    def check_qk_shape_unflattened(self, t: torch.Tensor, num_heads):
+        assert t.shape == (self.this_batch_size, num_heads,
+                           self.num_inputs,  self.d_qk)
+
+    def check_v_shape_unflattened(self, t: torch.Tensor, num_heads):
+        assert t.shape == (self.this_batch_size, num_heads,
+                           self.num_inputs, self.d_vo)
+
+    def check_attn_unflattened(self, t: torch.Tensor, num_heads):
+        assert t.shape == (self.this_batch_size, num_heads,
+                           self.num_inputs, self.num_inputs)
+
+
 class PositionEncoding(nn.Module):
 
     def __init__(self, d_model, max_len=6):
@@ -204,9 +263,16 @@ class PositionEncoding(nn.Module):
 
 class AttentionHead(nn.Module):
 
-    def __init__(self, d_model, d_qk, d_vo):
-
+    def __init__(self, d_model, d_qk, d_vo, dim_info: DimInfo):
         super().__init__()
+
+        self.dim_info = dim_info
+        self.dim_info.d_qk = d_qk
+        self.dim_info.d_vo = d_vo
+
+        # There are always 3 dims for input. dim 0 is for batch. row is 1, col is 2.
+        self.row_dim = 1
+        self.col_dim = 2
 
         self.W_q = nn.Linear(in_features=d_model,
                              out_features=d_qk, bias=False)
@@ -216,11 +282,6 @@ class AttentionHead(nn.Module):
                              out_features=d_vo, bias=False)
         self.W_o = nn.Linear(in_features=d_vo,
                              out_features=d_model, bias=False)
-
-        # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2.
-        # But there could be even more dims?? -2 and -1 work for this?
-        self.row_dim = -2
-        self.col_dim = -1
 
         self.printed_details = False
         self.saved_attention = torch.Tensor()
@@ -233,11 +294,16 @@ class AttentionHead(nn.Module):
 
         # print('W_q vals:', self.W_q.weight)
 
-    def forward(self, encodings_for_q, encodings_for_k, encodings_for_v, mask):
+    def forward(self, encodings, mask):
+        self.dim_info.check_encoding_shape(encodings)
 
-        q = self.W_q(encodings_for_q)
-        k = self.W_k(encodings_for_k)
-        v = self.W_v(encodings_for_v)
+        q = self.W_q(encodings)
+        k = self.W_k(encodings)
+        v = self.W_v(encodings)
+
+        self.dim_info.check_qk_shape(q)
+        self.dim_info.check_qk_shape(k)
+        self.dim_info.check_v_shape(v)
 
         if DEBUG_ATTN:
             print(f'q: {q}')
@@ -247,6 +313,7 @@ class AttentionHead(nn.Module):
 
         sims = torch.matmul(q, k.transpose(
             dim0=self.row_dim, dim1=self.col_dim))
+        self.dim_info.check_attn_shape(sims)
 
         if VERBOSE:
             print(f'sims: {sims}')
@@ -260,17 +327,28 @@ class AttentionHead(nn.Module):
         if VERBOSE:
             print(f'masked scaled_sims: {scaled_sims}')
 
-        attention_percents = F.softmax(scaled_sims, dim=self.col_dim)
+        # We need *row-wise* softmax, because matrix will be *post*-muliplied by v.
+        # The row is the last dim, hence dim=-1.
+        # Note dims are B,n,n where B=batch, n=inputs.
+        attention_percents = F.softmax(scaled_sims, dim=-1)
+        # We can check that the softmax was applied along the correct dimension,
+        # because the mask should cause everything above the leading diagonal to be zero.
+        # So when softmax is applied to the first row, there is only one nonzero element
+        # -- the top left element. Therefore, the top left element should be normalized
+        # to 1.0 (or extremely close to it).
+        topleft = attention_percents[0, 0, 0].item()
+        assert (abs(topleft-1.0) < 1e-5)
         if VERBOSE:
             print(f'attention_percents: {attention_percents}')
         if VERBOSE:
             print(f'attention_percents.dtype: {attention_percents.dtype}')
-        v = prepend_singleton_dims(v, 4)
+        # v = prepend_singleton_dims(v, 4)
         if VERBOSE:
             print(f'v: {v}')
         if VERBOSE:
             print(f'v.dtype: {v.dtype}')
         attention_scores = torch.matmul(attention_percents, v)
+        self.dim_info.check_v_shape(attention_scores)
         # *********** difference observed here
         if VERBOSE:
             print(f'attention_scores: {attention_scores}')
@@ -279,6 +357,7 @@ class AttentionHead(nn.Module):
         # SAVER.save_tensors({'p': attention_percents, 'v': v,
         #                    's': attention_scores}, 'single')
         attention_outputs = self.W_o(attention_scores)
+        self.dim_info.check_encoding_shape(attention_outputs)
         if VERBOSE:
             print(f'attention_outputs: {attention_outputs}')
         if VERBOSE:
@@ -288,7 +367,7 @@ class AttentionHead(nn.Module):
         #     print(f'attention_percents: {attention_percents}')
 
         if VERBOSE and not self.printed_details:
-            print('encodings_for_q shape:', encodings_for_q.shape)
+            print('encodings shape:', encodings.shape)
             print('q:', q.shape)
 
             print('k:', k.shape)
@@ -313,10 +392,14 @@ class AttentionHead(nn.Module):
 
 
 class AttentionLayer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ffn, d_qk, d_vo):
+    def __init__(self, d_model, num_heads, d_ffn, d_qk, d_vo, dim_info: DimInfo):
         super().__init__()
-
+        self.dim_info = dim_info
+        self.dim_info.d_ffn = d_ffn
+        self.dim_info.d_qk = d_qk
+        self.dim_info.d_vo = d_vo
         # attn_seed = 1234
+
         # torch.manual_seed(attn_seed)
         # print(f'torch.manual_seed with attn_seed in AttentionLayer(): {
         #       attn_seed}')
@@ -326,15 +409,15 @@ class AttentionLayer(nn.Module):
         if ATTN_HEAD_CONFIG == 'single':
             print('single head')
             self.self_attention = AttentionHead(
-                d_model=d_model, d_qk=d_qk, d_vo=d_vo)
+                d_model=d_model, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
         elif ATTN_HEAD_CONFIG == 'multi':
             print(f'multihead, num_heads={num_heads}')
             self.self_attention = MultiHeadAttention(
-                d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo)
+                d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
         elif ATTN_HEAD_CONFIG == 'multicompact':
             print(f'compact multihead, num_heads={num_heads}')
             self.self_attention = MultiAttentionHeadCompact(
-                d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo)
+                d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
         else:
             assert False
         # FFN layer
@@ -345,34 +428,42 @@ class AttentionLayer(nn.Module):
                 in_features=d_model, out_features=d_model)
 
     def forward(self, encodings, mask):
+        self.dim_info.check_encoding_shape(encodings)
         if VERBOSE:
             print('AttentionLayer.forward: before self_attention')
             print(f'encodings: {encodings}')
-        attention_scores = self.self_attention(
-            encodings, encodings, encodings, mask)
+        attention_scores = self.self_attention(encodings, mask)
+        self.dim_info.check_encoding_shape(attention_scores)
         if VERBOSE:
             print('AttentionLayer.forward: after self_attention')
             print(f'attention_scores: {attention_scores}')
         residual_attention_values = encodings + attention_scores
+        self.dim_info.check_encoding_shape(residual_attention_values)
         # print(f'residual_attention_values:\n{residual_attention_values}')
         ffn_outputs = self.ffn(residual_attention_values)
+        self.dim_info.check_encoding_shape(ffn_outputs)
         # print(f'ffn_outputs:\n{ffn_outputs}')
         residual_ffn_values = residual_attention_values + ffn_outputs
+        self.dim_info.check_encoding_shape(residual_ffn_values)
         # the above residuals follow equation (1) of Feng2023NeurIPS-chain-of-thought.
         # In the notation of that equation,
         # residual_attention_values is X^{l-1} + Attn^l(X^{l-1})
         # and
         # residual_ffn_values is X^{l}
+        self.dim_info.check_encoding_shape(residual_ffn_values)
         return residual_ffn_values
 
 
 class MultiAttentionHeadCompact(nn.Module):
 
-    def __init__(self, d_model, num_heads, d_qk, d_vo):
+    def __init__(self, d_model, num_heads, d_qk, d_vo, dim_info: DimInfo):
 
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
+        self.dim_info = dim_info
+        self.dim_info.d_qk = d_qk
+        self.dim_info.d_vo = d_vo
         self.d_qk = d_qk
         self.d_vo = d_vo
         self.width_qk = num_heads*d_qk
@@ -413,22 +504,28 @@ class MultiAttentionHeadCompact(nn.Module):
         return vals.view(-1, n, H, d).transpose(dim0=1, dim1=2)
 
     def flatten_head_vals(self, vals: torch.Tensor, n, H, d):
-        return vals.transpose(dim0=1, dim1=2).view(-1, n, H*d).squeeze(0)
+        return vals.transpose(dim0=1, dim1=2).view(-1, n, H*d)
 
-    def forward(self, encodings_for_q: torch.Tensor,
-                encodings_for_k: torch.Tensor,
-                encodings_for_v: torch.Tensor,
-                mask: torch.Tensor):
+    def forward(self, encodings: torch.Tensor, mask: torch.Tensor):
+        self.dim_info.check_encoding_shape(encodings)
 
-        q = self.W_q(encodings_for_q)
-        k = self.W_k(encodings_for_k)
-        v = self.W_v(encodings_for_v)
+        q = self.W_q(encodings)
+        k = self.W_k(encodings)
+        v = self.W_v(encodings)
         # print(f'created v, shape is {v.shape}')
 
-        num_inputs = encodings_for_q.shape[-2]
+        self.dim_info.check_qk_shape_multi(q, self.num_heads)
+        self.dim_info.check_qk_shape_multi(k, self.num_heads)
+        self.dim_info.check_v_shape_multi(v, self.num_heads)
+
+        num_inputs = encodings.shape[1]
         q = self.unflatten_head_vals(q, num_inputs, self.num_heads, self.d_qk)
         k = self.unflatten_head_vals(k, num_inputs, self.num_heads, self.d_qk)
         v = self.unflatten_head_vals(v, num_inputs, self.num_heads, self.d_vo)
+
+        self.dim_info.check_qk_shape_unflattened(q, self.num_heads)
+        self.dim_info.check_qk_shape_unflattened(k, self.num_heads)
+        self.dim_info.check_v_shape_unflattened(v, self.num_heads)
 
         # print(f'unflattened v, shape is {v.shape}')
 
@@ -441,11 +538,13 @@ class MultiAttentionHeadCompact(nn.Module):
 
         sims = torch.matmul(q, k.transpose(
             dim0=self.row_dim, dim1=self.col_dim))
+        self.dim_info.check_attn_unflattened(sims, self.num_heads)
 
         if VERBOSE:
             print(f'sims: {sims}')
 
         scaled_sims = sims / torch.tensor(self.d_qk**0.5)
+
         if VERBOSE:
             print(f'scaled_sims: {scaled_sims}')
 
@@ -454,25 +553,43 @@ class MultiAttentionHeadCompact(nn.Module):
         if VERBOSE:
             print(f'masked scaled_sims: {scaled_sims}')
 
-        attention_percents = F.softmax(scaled_sims, dim=self.col_dim)
+        # We need *row-wise* softmax, because matrix will be *post*-muliplied by v.
+        # The row is the last dim, hence dim=-1.
+        # Note dims are B,H,n,n where B=batch, H=heads, n=inputs.
+        attention_percents = F.softmax(scaled_sims, dim=-1)
+        # We can check that the softmax was applied along the correct dimension,
+        # because the mask should cause everything above the leading diagonal to be zero.
+        # So when softmax is applied to the first row, there is only one nonzero element
+        # -- the top left element. Therefore, the top left element should be normalized
+        # to 1.0 (or extremely close to it).
+        topleft = attention_percents[0, 0, 0, 0].item()
+        assert (abs(topleft-1.0) < 1e-5)
+
         if VERBOSE:
             print(f'attention_percents: {attention_percents}')
             print(f'attention_percents.dtype: {attention_percents.dtype}')
-        v = prepend_singleton_dims(v, 4)
+        # v = prepend_singleton_dims(v, 4)
         if VERBOSE:
             print(f'v: {v}')
             print(f'v.dtype: {v.dtype}')
             print(f'about to calc attention_scores')
             print(f'attention_percents.shape: {attention_percents.shape}')
             print(f'v.shape: {v.shape}')
+
         attention_scores = torch.matmul(attention_percents, v)
+        self.dim_info.check_v_shape_unflattened(
+            attention_scores, self.num_heads)
+
         if VERBOSE:
             print(f'attention_scores: {attention_scores}')
             print(f'attention_scores.dtype: {attention_scores.dtype}')
         attention_scores_unstacked = self.flatten_head_vals(
             attention_scores, num_inputs, self.num_heads, self.d_vo)
+        self.dim_info.check_v_shape_multi(
+            attention_scores_unstacked, self.num_heads)
         # *********** difference observed here
         attention_outputs = self.W_o(attention_scores_unstacked)
+        self.dim_info.check_encoding_shape(attention_outputs)
         if VERBOSE:
             print(f'attention_outputs: {attention_outputs}')
             print(f'attention_outputs.dtype: {attention_outputs.dtype}')
@@ -482,7 +599,7 @@ class MultiAttentionHeadCompact(nn.Module):
         #     print(f'attention_percents: {attention_percents}')
 
         if VERBOSE and not self.printed_details:
-            print('encodings_for_q shape:', encodings_for_q.shape)
+            print('encodings_for_q shape:', encodings.shape)
             print('q:', q.shape)
 
             print('k:', k.shape)
@@ -508,13 +625,14 @@ class MultiAttentionHeadCompact(nn.Module):
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, d_model, num_heads, d_qk, d_vo):
+    def __init__(self, d_model, num_heads, d_qk, d_vo, dim_info: DimInfo):
         super().__init__()
         self.attention_heads = nn.ModuleList()
         self.num_heads = num_heads
+        self.dim_info = dim_info
         for _ in range(num_heads):
             attention_head = AttentionHead(
-                d_model=d_model, d_qk=d_qk, d_vo=d_vo)
+                d_model=d_model, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
             self.attention_heads.append(attention_head)
         # e.g. when 3 dims, dim 0 is for batch. row is 1, col is 2.
         # But there could be even more dims?? -2 and -1 work for this?
@@ -523,21 +641,22 @@ class MultiHeadAttention(nn.Module):
         self.printed_details = False
         self.saved_attention = torch.Tensor()
 
-    def forward(self, encodings_for_q, encodings_for_k, encodings_for_v, mask):
-        # return self.attention_heads[0].forward(encodings_for_q, encodings_for_k, encodings_for_v, mask)
-        attention_scores_tot = torch.zeros_like(encodings_for_q)
-        attention_scores_tot = prepend_singleton_dims(
-            attention_scores_tot, 4)
+    def forward(self, encodings, mask):
+        self.dim_info.check_encoding_shape(encodings)
+        attention_scores_tot = torch.zeros_like(encodings)
+        # attention_scores_tot = prepend_singleton_dims(
+        #     attention_scores_tot, 4)
         if SAVE_ATTENTION:
-            self.saved_attention = torch.zeros_like(encodings_for_q)
+            self.saved_attention = torch.zeros_like(encodings)
 
         # todo: Presumably there is a way to run these heads in parallel
         for head in self.attention_heads:
-            attention_scores = head.forward(
-                encodings_for_q, encodings_for_k, encodings_for_v, mask)
+            attention_scores = head.forward(encodings, mask)
+            self.dim_info.check_encoding_shape(attention_scores)
             attention_scores_tot += attention_scores
             if SAVE_ATTENTION:
                 self.saved_attention += head.saved_attention
+        self.dim_info.check_encoding_shape(attention_scores_tot)
         return attention_scores_tot
 
 
@@ -556,13 +675,17 @@ class FFN_2_layer(nn.Module):
 
 
 class AttentionLayers(nn.Module):
-    def __init__(self, d_model, num_heads, d_ffn, num_attn_layers, d_qk, d_vo):
+    def __init__(self, d_model, num_heads, d_ffn, num_attn_layers, d_qk, d_vo, dim_info: DimInfo):
         super().__init__()
+        self.dim_info = dim_info
+        self.dim_info.d_ffn = d_ffn
+        self.dim_info.d_qk = d_qk
+        self.dim_info.d_vo = d_vo
         self.attn_layers = nn.ModuleList()
         self.num_layers = num_attn_layers
         for _ in range(num_attn_layers):
             attention_layer = AttentionLayer(
-                d_model=d_model, num_heads=num_heads, d_ffn=d_ffn, d_qk=d_qk, d_vo=d_vo)
+                d_model=d_model, num_heads=num_heads, d_ffn=d_ffn, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
             self.attn_layers.append(attention_layer)
 
     def forward(self, encodings, mask):
@@ -591,6 +714,11 @@ class DecoderOnlyTransformer(nn.Module):
 
         super().__init__()
 
+        self.dim_info = DimInfo(d_model=d_model)
+
+        self.vocab_size = num_tokens
+        self.max_num_inputs = max_len
+
         # token embedding
         self.we = nn.Embedding(num_embeddings=num_tokens,
                                embedding_dim=d_model)
@@ -618,11 +746,11 @@ class DecoderOnlyTransformer(nn.Module):
 
         if not USE_ATTN_LAYERS:
             self.attn_layer = AttentionLayer(
-                d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN, d_qk=D_QK, d_vo=D_VO)
+                d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN, d_qk=D_QK, d_vo=D_VO, dim_info=self.dim_info)
         else:
             self.attn_layer = AttentionLayers(
                 d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN,
-                num_attn_layers=NUM_ATTN_LAYERS, d_qk=D_QK, d_vo=D_VO)
+                num_attn_layers=NUM_ATTN_LAYERS, d_qk=D_QK, d_vo=D_VO, dim_info=self.dim_info)
 
         # final FC for token classification (outputs logits)
         self.tok_classifier = nn.Linear(
@@ -642,6 +770,14 @@ class DecoderOnlyTransformer(nn.Module):
         self.forward_counter = 0
 
     def forward(self, token_ids):
+
+        assert token_ids.ndim == 2
+        # A batch produced by a DataLoader could be smaller than the specified
+        # batch size, for example when drawing from the last few instances at
+        # the end of the dataset.
+        self.dim_info.this_batch_size = token_ids.shape[0]
+        self.dim_info.num_inputs = token_ids.shape[1]
+
         # global DEBUG_ATTN
         # self.forward_counter += 1
         # if self.forward_counter == 3:
@@ -650,10 +786,14 @@ class DecoderOnlyTransformer(nn.Module):
             self.saved_token_IDs = token_ids
 
         word_embeddings = self.we(token_ids)
-        position_encoded = self.pe(word_embeddings)
+        self.dim_info.check_encoding_shape(word_embeddings)
 
+        position_encoded = self.pe(word_embeddings)
+        self.dim_info.check_encoding_shape(position_encoded)
+
+        num_inputs = token_ids.shape[1]
         mask = torch.tril(torch.ones(
-            (token_ids.size(dim=-1), token_ids.size(dim=-1)), device=device))
+            (num_inputs, num_inputs), device=DEVICE))
         mask = mask == 0
         if VERBOSE and not self.printed_mask:
             print('mask:', mask.data)
@@ -679,6 +819,7 @@ class DecoderOnlyTransformer(nn.Module):
             print(f'mask: {mask}')
 
         attn_output = self.attn_layer(position_encoded, mask)
+        self.dim_info.check_encoding_shape(attn_output)
         if VERBOSE:
             print('after attn layer')
             print(f'attn_output: {attn_output}')
@@ -703,7 +844,7 @@ class DecoderOnlyTransformer(nn.Module):
 
 def predict_top(model, model_input, num_top):
     # last row (final token) only
-    logits = model(model_input.to(device))[-1, :]
+    logits = model(model_input.to(DEVICE))[-1, :]
     probs = F.softmax(logits, dim=0)
     top_probs, top_indices = torch.topk(probs, num_top)
     for idx, prob in zip(top_indices, top_probs):
@@ -715,7 +856,7 @@ def predict(model, model_input, max_len):
     input_length = model_input.size(dim=0)
 
     # get predictions (logits) from the model
-    predictions = model(model_input.to(device))
+    predictions = model(model_input.to(DEVICE))
     # Since we only want the prediction from the
     # last row (the most recent prediction) we use reverse index for the
     # row, -1.
@@ -734,7 +875,7 @@ def predict(model, model_input, max_len):
 
         model_input = torch.cat((model_input, predicted_id))
 
-        predictions = model(model_input.to(device))
+        predictions = model(model_input.to(DEVICE))
         predicted_id = torch.tensor([torch.argmax(predictions[-1, :])])
         predicted_ids = torch.cat((predicted_ids, predicted_id))
 
@@ -759,14 +900,14 @@ def compare_model_params(models):
 def evaluate_gradient(model, x, y):
     model.train()
     model.zero_grad()
-    y_pred = model(x.to(device))  # Perform a forward pass
-    loss = model.loss(y_pred, y.to(device))
+    y_pred = model(x.to(DEVICE))  # Perform a forward pass
+    loss = model.loss(y_pred, y.to(DEVICE))
     # print(f'loss {loss}')
     loss.backward()
 
 
 def calc_pred_and_loss(model: nn.Module, X: torch.Tensor, y: torch.Tensor):
-    y_pred = model(X.to(device))
+    y_pred = model(X.to(DEVICE))
     # See my diary entry for 10/23/2024 for detailed explanation of this transpose.
     # Basically, when we have a batch size greater than one,
     # then the first dimension of y_pred should be the batches (which is correct already),
@@ -785,20 +926,28 @@ def calc_pred_and_loss(model: nn.Module, X: torch.Tensor, y: torch.Tensor):
     y_pred.transpose_(dim0=-2, dim1=-1)
     # print(f'y_pred.shape {y_pred.shape}')
     # print(f'y.shape {y.shape}')
-    loss = model.loss(y_pred, y.to(device))
+    loss = model.loss(y_pred, y.to(DEVICE))
     return y_pred, loss
 
 
-def do_training_step(model, optimizer, X, y, print_loss=False):
-    # X could be a batch or a single instance
-    X_orig = X
-    y_orig = y
-    X = X.squeeze(0)
-    y = y.squeeze(0).to(device)
+def do_training_step(model: torch.nn.Module, optimizer, X: torch.Tensor, y: torch.Tensor, print_loss=False):
+    # X could be a batch or a single instance.
+    # If it's a single instance, convert it to a batch of size 1.
+    # This guarantees the input will have a known dimensionality.
+    # Same for y.
+    assert X.ndim == 1 or X.ndim == 2
+    if X.ndim == 1:
+        X.unsqueeze_(-1)
+    assert y.ndim == 1 or y.ndim == 2
+    if y.ndim == 1:
+        y.unsqueeze_(-1)
+
+    X = X.to(DEVICE)
+    y = y.to(DEVICE)
     # print('about to calc y_pred')
     # print(f'X {X}')
     # print(f'y {y}')
-    y_pred = model(X.to(device))
+    y_pred = model(X)
     if VERBOSE:
         print('applied model and returned y_pred')
         print(f'y_pred {y_pred}')
@@ -860,7 +1009,7 @@ def create_model(batch_size):
 
     model = DecoderOnlyTransformer(num_tokens=len(
         token_to_id), d_model=D_MODEL, max_len=MAX_INPUT_TOKENS)
-    model.to(device)
+    model.to(DEVICE)
     model.train()
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
     dataloader = DataLoader(dataset, batch_size=batch_size)
@@ -890,7 +1039,7 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
     num_errs = 0
     num_response_errs = 0
     for batch, (X, y) in enumerate(dataloader):
-        y_pred = model(X.to(device))
+        y_pred = model(X.to(DEVICE))
         predicted_ids = torch.argmax(y_pred, dim=-1)
         # print(f'X: {X}')
         # print(f'y_pred: {y_pred}')
@@ -1125,7 +1274,7 @@ def main2():
     #     model = models[0]
     #     SAVE_ATTENTION = True
     #     for in_str in input_strings:
-    #         logits = model(input_to_tensor(in_str).to(device))
+    #         logits = model(input_to_tensor(in_str).to(DEVICE))
     #         attention = model.get_saved_attention()
     #         token_ids = model.saved_token_IDs
     #         print('\n' + in_str)
