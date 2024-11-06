@@ -26,14 +26,14 @@ USE_ATTN_LAYERS = False
 
 
 MAX_INPUT_TOKENS = 6  # i.e. context window
-D_MODEL = 10  # 4
+D_MODEL = 4  # 4
 # Final dimension of weight matrices W_q, W_k in attention heads
 # -- we can use these to project into a lower-dimensional space
-D_QK = 9
+D_QK = 3
 # Final dimension of weight matrix W_v in attention heads and first dim of W_o
 # ("values" and "outputs" matrices)
-D_VO = 8
-NUM_ATTN_HEADS = 1
+D_VO = 4
+NUM_ATTN_HEADS = 2
 NUM_ATTN_LAYERS = 3
 # True if the so-called 'FFN' layer is a genuine feedforward network
 # with two layers separated by a nonlinear activation function.
@@ -114,6 +114,8 @@ input_strings = ['what is statquest <EOS> awesome',
                  'pear <EOS> pear',
                  'grape <EOS> grape',
                  ]
+
+# input_strings = ['what is']
 
 inputs = [input_to_tensor(input_string) for input_string in input_strings]
 advanced_inputs = [advance_input(input_str) for input_str in input_strings]
@@ -504,7 +506,7 @@ class MultiAttentionHeadCompact(nn.Module):
         return vals.view(-1, n, H, d).transpose(dim0=1, dim1=2)
 
     def flatten_head_vals(self, vals: torch.Tensor, n, H, d):
-        return vals.transpose(dim0=1, dim1=2).view(-1, n, H*d)
+        return vals.transpose(dim0=1, dim1=2).reshape(-1, n, H*d)
 
     def forward(self, encodings: torch.Tensor, mask: torch.Tensor):
         self.dim_info.check_encoding_shape(encodings)
@@ -1134,8 +1136,71 @@ def print_params(model: nn.Module):
         print(f"{name}:\n{param.data}")
 
 
+def copy_attn_multi_to_compact(multi_model, compact_model, num_heads, d_model, d_qk, d_vo):
+    multi_attn = multi_model.attn_layer.self_attention
+    compact_attn = compact_model.attn_layer.self_attention
+    # print('multi:')
+    # print_params(multi_attn)
+
+    c = compact_attn
+    m = multi_attn.attention_heads
+
+    with torch.no_grad():
+        for h in range(num_heads):
+            c.W_q.weight[h*d_qk:(h+1)*d_qk, :] = m[h].W_q.weight
+            c.W_k.weight[h*d_qk:(h+1)*d_qk, :] = m[h].W_k.weight
+            c.W_v.weight[h*d_vo:(h+1)*d_vo, :] = m[h].W_v.weight
+            c.W_o.weight[:, h*d_vo:(h+1)*d_vo] = m[h].W_o.weight
+
+    # print('compact:')
+    # print_params(compact_attn)
+
+
+def main5():
+    global ATTN_HEAD_CONFIG, BATCH_SIZE, USE_ATTN_LAYERS, USE_2FFN, NUM_ATTN_HEADS
+    NUM_ATTN_HEADS = 2
+    ATTN_HEAD_CONFIG = 'multi'
+    multi, _, _ = create_model(batch_size=BATCH_SIZE)
+    ATTN_HEAD_CONFIG = 'multicompact'
+    compact, _, _ = create_model(batch_size=BATCH_SIZE)
+    copy_attn_multi_to_compact(
+        multi, compact, NUM_ATTN_HEADS, D_MODEL, D_QK, D_VO)
+
+
 def main():
+    global ATTN_HEAD_CONFIG, BATCH_SIZE, USE_ATTN_LAYERS, USE_2FFN, NUM_ATTN_HEADS
+    NUM_ATTN_HEADS = 3
+    for BATCH_SIZE in [1, 5]:
+        for USE_ATTN_LAYERS in [False, ]:
+            for USE_2FFN in [False, True]:
+                models_etc = dict()
+                for ATTN_HEAD_CONFIG in ['multi', 'multicompact']:
+                    model, optimizer, dataloader = create_model(
+                        batch_size=BATCH_SIZE)
+                    models_etc[ATTN_HEAD_CONFIG] = (
+                        model, optimizer, dataloader)
+                copy_attn_multi_to_compact(models_etc['multi'][0],
+                                           models_etc['multicompact'][0],
+                                           NUM_ATTN_HEADS, D_MODEL, D_QK, D_VO)
+                for ATTN_HEAD_CONFIG in ['multi', 'multicompact']:
+                    max_steps = 3
+                    model, optimizer, dataloader = models_etc[ATTN_HEAD_CONFIG]
+                    for step, (X, y) in enumerate(dataloader):
+                        # print(f"starting step {step}, params:")
+                        # print_params(model)
+                        # print_gradients(model)
+                        if step >= max_steps:
+                            break
+                        # print(f'training step {step}...')
+                        do_training_step(model, optimizer,
+                                         X, y, print_loss=True)
+
+    return
+
+
+def main3():
     global ATTN_HEAD_CONFIG, BATCH_SIZE, USE_ATTN_LAYERS, USE_2FFN
+
     for ATTN_HEAD_CONFIG in ['single', 'multi', 'multicompact']:
         for BATCH_SIZE in [1, 5]:
             for USE_ATTN_LAYERS in [False, True]:
