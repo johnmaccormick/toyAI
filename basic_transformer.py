@@ -11,44 +11,6 @@ import torch.nn.functional as F  # This gives us the softmax() and argmax()
 
 # from jm_util import Saver
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {DEVICE}")
-
-
-# debugging
-VERBOSE = False
-DEBUG_ATTN = False
-SAVE_ATTENTION = False
-
-ATTN_HEAD_CONFIG = 'single'  # 'single', 'multi', 'multicompact'
-
-USE_ATTN_LAYERS = False
-
-
-MAX_INPUT_TOKENS = 6  # i.e. context window
-D_MODEL = 4  # 4
-# Final dimension of weight matrices W_q, W_k in attention heads
-# -- we can use these to project into a lower-dimensional space
-D_QK = 3
-# Final dimension of weight matrix W_v in attention heads and first dim of W_o
-# ("values" and "outputs" matrices)
-D_VO = 4
-NUM_ATTN_HEADS = 2
-NUM_ATTN_LAYERS = 3
-# True if the so-called 'FFN' layer is a genuine feedforward network
-# with two layers separated by a nonlinear activation function.
-# False if the 'FFN' layer is just a single linear module.
-USE_2FFN = False
-# Number of nodes in the middle part of the two-layer FFN (if used)
-D_FFN = 20
-
-
-LEARNING_RATE = 0.02
-NUM_EPOCHS = 300
-LOSS_PRINT_FREQ = 50
-BATCH_SIZE = 5
-THE_SEED = 42
-
 
 token_to_id = {'what': 0,
                'is': 1,
@@ -104,6 +66,19 @@ def add_padding(ids_list):
             ids_list[i] = padded_tensor
 
 
+class Data(Dataset):
+    def __init__(self, X, Y):
+        self.X = X
+        self.Y = Y
+        self.len = len(X)
+
+    def __getitem__(self, index):
+        return self.X[index], self.Y[index]
+
+    def __len__(self):
+        return self.len
+
+
 input_strings = ['what is statquest <EOS> awesome',
                  'what is statquest <EOS> awesome',
                  'what is statquest <EOS> awesome',
@@ -124,25 +99,82 @@ labels = [input_to_tensor(advanced_input)
 
 add_padding(inputs)
 add_padding(labels)
+DATASET = Data(inputs, labels)
 
 # SAVER = Saver()
 
 
-class Data(Dataset):
-    def __init__(self, X, Y):
-        self.X = X
-        self.Y = Y
-        self.len = len(X)
+class BasicTransformerParams():
 
-    def __getitem__(self, index):
-        return self.X[index], self.Y[index]
+    def __init__(self):
+        '''The so-called model dimension, also sometimes called the embedding dimension. 
+        This is the length of the vectors output by the token embedding. 
+        It is also the length of the vectors transmitted between major layers of 
+        the transformer neural network.'''
+        self.d_model = 2
 
-    def __len__(self):
-        return self.len
+        '''Also known as the context window, this is the maximum number of 
+        tokens the model can ingest.'''
+        self.max_input_tokens = 6
 
+        '''Does the transformer use multiple layers of self attention?'''
+        self.use_attn_layers = False
 
-dataset = Data(inputs, labels)
-# dataloader = DataLoader(dataset, batch_size=batch_size)
+        '''Assuming multiple self attention layers are used, how many layers are there?'''
+        self.num_attn_layers = 3
+
+        '''In each of self attention layer, 
+        there can be multiple attention heads. 
+        This is the number of attention heads in each layer.'''
+        self.num_attn_heads = 1
+
+        '''Final dimension of weight matrices W_q, W_k in attention heads
+        -- we can use these to project into a lower-dimensional space'''
+        self.d_qk = 3
+
+        '''Final dimension of weight matrix W_v in attention heads and first dim of W_o
+        ("values" and "outputs" matrices)'''
+        self.d_vo = 4
+
+        '''This specifies the type of attention head(s) to be used: 
+        'single', 'multi', or 'multicompact'.
+        - 'single' employs a single head in each layer; 
+        - 'multi' employs multiple heads in each layer implemented in a somewhat 
+          inefficient but simple manner; 
+        - 'multicompact' employs multiple heads in each layer implemented 
+          so that the weights for all heads are compacted into one set of matrices 
+          and can thus be computed more efficiently.'''
+        self.attn_head_config = 'single'
+
+        '''True if the so-called 'FFN' sublayer in each attention layer 
+        is a genuine feedforward network
+        with two layers separated by a nonlinear activation function.
+        False if the 'FFN' layer is just a single linear module.'''
+        self.use_2ffn = False
+
+        '''Number of nodes in the middle part of the two-layer FFN (if used)'''
+        self.d_ffn = 20
+
+        '''Size of minibatches when performing learning'''
+        self.batch_size = 5
+
+        '''Learning rate used by the optimizer'''
+        self.learning_rate = 0.02
+
+        '''Number of epochs that the optimizer will run for. 
+        An epoch is one iteration through the training set.'''
+        self.num_epochs = 300
+
+        '''While training is taking place, the current loss can be printed every time 
+        a fixed number of epochs are completed.'''
+        self.loss_print_freq = 50
+
+        '''PyTorch should be manually seeded with this value before training.'''
+        self.seed = 42
+
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
 
 
 def prepend_singleton_dims(tensor, target_dims):
@@ -178,7 +210,7 @@ class DimInfo:
         # tokens that were in the input. (Typically, if there is a batch of inputs,
         # they are padded so that the length of all inputs is the same as the maximum.)
         # This value is initialized to -1, but typically it will store the number of
-        # tokens and put in the most recent (or current) call to forward().
+        # tokens input in the most recent (or current) call to forward().
         self.num_inputs = num_inputs
         # number of dims in token embeddings
         self.d_model = d_model
@@ -238,9 +270,6 @@ class PositionEncoding(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
 
         self.register_buffer('pe', pe)
-        if VERBOSE:
-            print('pos encoding:', pe.data)
-            print('pos encoding shape:', pe.shape)
 
     def forward(self, word_embeddings):
         # word_embeddings dims are: batch, token_pos, embed_dim
@@ -288,14 +317,6 @@ class AttentionHead(nn.Module):
         self.printed_details = False
         self.saved_attention = torch.Tensor()
 
-        if VERBOSE:
-            print('W_q:', self.W_q.weight.shape)
-            print('W_k:', self.W_k.weight.shape)
-            print('W_v:', self.W_v.weight.shape)
-            print('W_o:', self.W_o.weight.shape)
-
-        # print('W_q vals:', self.W_q.weight)
-
     def forward(self, encodings, mask):
         self.dim_info.check_encoding_shape(encodings)
 
@@ -307,27 +328,12 @@ class AttentionHead(nn.Module):
         self.dim_info.check_qk_shape(k)
         self.dim_info.check_v_shape(v)
 
-        if DEBUG_ATTN:
-            print(f'q: {q}')
-            print(f'k: {k}')
-            print(f'v: {v}')
-            print(f'k.size(self.col_dim): {k.size(self.col_dim)}')
-
         sims = torch.matmul(q, k.transpose(
             dim0=self.row_dim, dim1=self.col_dim))
         self.dim_info.check_attn_shape(sims)
-
-        if VERBOSE:
-            print(f'sims: {sims}')
-
         scaled_sims = sims / torch.tensor(k.size(self.col_dim)**0.5)
-        if VERBOSE:
-            print(f'scaled_sims: {scaled_sims}')
-
         if mask is not None:
             scaled_sims = scaled_sims.masked_fill(mask=mask, value=-1e9)
-        if VERBOSE:
-            print(f'masked scaled_sims: {scaled_sims}')
 
         # We need *row-wise* softmax, because matrix will be *post*-muliplied by v.
         # The row is the last dim, hence dim=-1.
@@ -340,66 +346,22 @@ class AttentionHead(nn.Module):
         # to 1.0 (or extremely close to it).
         topleft = attention_percents[0, 0, 0].item()
         assert (abs(topleft-1.0) < 1e-5)
-        if VERBOSE:
-            print(f'attention_percents: {attention_percents}')
-        if VERBOSE:
-            print(f'attention_percents.dtype: {attention_percents.dtype}')
-        # v = prepend_singleton_dims(v, 4)
-        if VERBOSE:
-            print(f'v: {v}')
-        if VERBOSE:
-            print(f'v.dtype: {v.dtype}')
         attention_scores = torch.matmul(attention_percents, v)
         self.dim_info.check_v_shape(attention_scores)
-        # *********** difference observed here
-        if VERBOSE:
-            print(f'attention_scores: {attention_scores}')
-        if VERBOSE:
-            print(f'attention_scores.dtype: {attention_scores.dtype}')
-        # SAVER.save_tensors({'p': attention_percents, 'v': v,
-        #                    's': attention_scores}, 'single')
         attention_outputs = self.W_o(attention_scores)
         self.dim_info.check_encoding_shape(attention_outputs)
-        if VERBOSE:
-            print(f'attention_outputs: {attention_outputs}')
-        if VERBOSE:
-            print(f'attention_outputs.dtype: {attention_outputs.dtype}')
-
-        # if DEBUG_ATTN:
-        #     print(f'attention_percents: {attention_percents}')
-
-        if VERBOSE and not self.printed_details:
-            print('encodings shape:', encodings.shape)
-            print('q:', q.shape)
-
-            print('k:', k.shape)
-            print('v:', v.shape)
-            print('sims:', sims)
-            print('sims shape:', sims.data.shape)
-            print('scaled_sims:', scaled_sims)
-            print('scaled sims shape:', scaled_sims.data.shape)
-            print('attention_percents:', attention_percents.data)
-            print('attention_percents shape:', attention_percents.data.shape)
-            print('attention_scores:', attention_scores.data)
-            print('attention_scores shape:', attention_scores.data.shape)
-            self.printed_details = True
-
-        if SAVE_ATTENTION:
-            self.saved_attention = attention_percents
-
-        # if torch.rand(1).item() < 0.002:
-        #     print(rounded_tensor_to_str(attention_percents))
-
         return attention_outputs
 
 
 class AttentionLayer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ffn, d_qk, d_vo, dim_info: DimInfo):
+    def __init__(self,
+                 btp: BasicTransformerParams,
+                 dim_info: DimInfo):
         super().__init__()
         self.dim_info = dim_info
-        self.dim_info.d_ffn = d_ffn
-        self.dim_info.d_qk = d_qk
-        self.dim_info.d_vo = d_vo
+        self.dim_info.d_ffn = btp.d_ffn
+        self.dim_info.d_qk = btp.d_qk
+        self.dim_info.d_vo = btp.d_vo
         # attn_seed = 1234
 
         # torch.manual_seed(attn_seed)
@@ -408,37 +370,31 @@ class AttentionLayer(nn.Module):
 
         # attention head(s)
         # 'single', 'multi', 'multicompact'
-        if ATTN_HEAD_CONFIG == 'single':
+        if btp.attn_head_config == 'single':
             print('single head')
             self.self_attention = AttentionHead(
-                d_model=d_model, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
-        elif ATTN_HEAD_CONFIG == 'multi':
-            print(f'multihead, num_heads={num_heads}')
+                d_model=btp.d_model, d_qk=btp.d_qk, d_vo=btp.d_vo, dim_info=dim_info)
+        elif btp.attn_head_config == 'multi':
+            print(f'multihead, num_heads={btp.num_attn_heads}')
             self.self_attention = MultiHeadAttention(
-                d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
-        elif ATTN_HEAD_CONFIG == 'multicompact':
-            print(f'compact multihead, num_heads={num_heads}')
+                d_model=btp.d_model, num_heads=btp.num_attn_heads, d_qk=btp.d_qk, d_vo=btp.d_vo, dim_info=dim_info)
+        elif btp.attn_head_config == 'multicompact':
+            print(f'compact multihead, num_heads={btp.num_attn_heads}')
             self.self_attention = MultiAttentionHeadCompact(
-                d_model=d_model, num_heads=num_heads, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
+                d_model=btp.d_model, num_heads=btp.num_attn_heads, d_qk=btp.d_qk, d_vo=btp.d_vo, dim_info=dim_info)
         else:
             assert False
         # FFN layer
-        if USE_2FFN:
-            self.ffn = FFN_2_layer(d_model, d_ffn, d_model)
+        if btp.use_2ffn:
+            self.ffn = FFN_2_layer(btp.d_model, btp.d_ffn, btp.d_model)
         else:
             self.ffn = nn.Linear(
-                in_features=d_model, out_features=d_model)
+                in_features=btp.d_model, out_features=btp.d_model)
 
     def forward(self, encodings, mask):
         self.dim_info.check_encoding_shape(encodings)
-        if VERBOSE:
-            print('AttentionLayer.forward: before self_attention')
-            print(f'encodings: {encodings}')
         attention_scores = self.self_attention(encodings, mask)
         self.dim_info.check_encoding_shape(attention_scores)
-        if VERBOSE:
-            print('AttentionLayer.forward: after self_attention')
-            print(f'attention_scores: {attention_scores}')
         residual_attention_values = encodings + attention_scores
         self.dim_info.check_encoding_shape(residual_attention_values)
         # print(f'residual_attention_values:\n{residual_attention_values}')
@@ -489,20 +445,7 @@ class MultiAttentionHeadCompact(nn.Module):
         self.printed_details = False
         self.saved_attention = torch.Tensor()
 
-        if VERBOSE:
-            print('W_q:', self.W_q.weight.shape)
-            print('W_k:', self.W_k.weight.shape)
-            print('W_v:', self.W_v.weight.shape)
-            print('W_o:', self.W_o.weight.shape)
-
-            # print('W_q vals:', self.W_q.weight)
-
     def unflatten_head_vals(self, vals: torch.Tensor, n, H, d):
-        # print(f'unflatten_head_vals, n={n}, H={H}, d={d}')
-        # v1 = vals.view(-1, n, H, d)
-        # print(f'v1.shape {v1.shape}')
-        # v2 = v1.transpose(dim0=1, dim1=2)
-        # print(f'v2.shape {v2.shape}')
         return vals.view(-1, n, H, d).transpose(dim0=1, dim1=2)
 
     def flatten_head_vals(self, vals: torch.Tensor, n, H, d):
@@ -529,31 +472,14 @@ class MultiAttentionHeadCompact(nn.Module):
         self.dim_info.check_qk_shape_unflattened(k, self.num_heads)
         self.dim_info.check_v_shape_unflattened(v, self.num_heads)
 
-        # print(f'unflattened v, shape is {v.shape}')
-
-        if DEBUG_ATTN:
-            print(f'q: {q}')
-            print(f'k: {k}')
-            print(f'v: {v}')
-            print(f'k.size(self.col_dim): {k.size(self.col_dim)}')
-            assert k.size(self.col_dim) == self.d_qk
-
         sims = torch.matmul(q, k.transpose(
             dim0=self.row_dim, dim1=self.col_dim))
         self.dim_info.check_attn_unflattened(sims, self.num_heads)
 
-        if VERBOSE:
-            print(f'sims: {sims}')
-
         scaled_sims = sims / torch.tensor(self.d_qk**0.5)
-
-        if VERBOSE:
-            print(f'scaled_sims: {scaled_sims}')
 
         if mask is not None:
             scaled_sims = scaled_sims.masked_fill(mask=mask, value=-1e9)
-        if VERBOSE:
-            print(f'masked scaled_sims: {scaled_sims}')
 
         # We need *row-wise* softmax, because matrix will be *post*-muliplied by v.
         # The row is the last dim, hence dim=-1.
@@ -567,24 +493,10 @@ class MultiAttentionHeadCompact(nn.Module):
         topleft = attention_percents[0, 0, 0, 0].item()
         assert (abs(topleft-1.0) < 1e-5)
 
-        if VERBOSE:
-            print(f'attention_percents: {attention_percents}')
-            print(f'attention_percents.dtype: {attention_percents.dtype}')
-        # v = prepend_singleton_dims(v, 4)
-        if VERBOSE:
-            print(f'v: {v}')
-            print(f'v.dtype: {v.dtype}')
-            print(f'about to calc attention_scores')
-            print(f'attention_percents.shape: {attention_percents.shape}')
-            print(f'v.shape: {v.shape}')
-
         attention_scores = torch.matmul(attention_percents, v)
         self.dim_info.check_v_shape_unflattened(
             attention_scores, self.num_heads)
 
-        if VERBOSE:
-            print(f'attention_scores: {attention_scores}')
-            print(f'attention_scores.dtype: {attention_scores.dtype}')
         attention_scores_unstacked = self.flatten_head_vals(
             attention_scores, num_inputs, self.num_heads, self.d_vo)
         self.dim_info.check_v_shape_multi(
@@ -592,35 +504,6 @@ class MultiAttentionHeadCompact(nn.Module):
         # *********** difference observed here
         attention_outputs = self.W_o(attention_scores_unstacked)
         self.dim_info.check_encoding_shape(attention_outputs)
-        if VERBOSE:
-            print(f'attention_outputs: {attention_outputs}')
-            print(f'attention_outputs.dtype: {attention_outputs.dtype}')
-        # SAVER.save_tensors({'p': attention_percents, 'v': v,
-        #                    's': attention_scores}, 'compact')
-# if DEBUG_ATTN:
-        #     print(f'attention_percents: {attention_percents}')
-
-        if VERBOSE and not self.printed_details:
-            print('encodings_for_q shape:', encodings.shape)
-            print('q:', q.shape)
-
-            print('k:', k.shape)
-            print('v:', v.shape)
-            print('sims:', sims)
-            print('sims shape:', sims.data.shape)
-            print('scaled_sims:', scaled_sims)
-            print('scaled sims shape:', scaled_sims.data.shape)
-            print('attention_percents:', attention_percents.data)
-            print('attention_percents shape:', attention_percents.data.shape)
-            print('attention_scores:', attention_scores.data)
-            print('attention_scores shape:', attention_scores.data.shape)
-            self.printed_details = True
-
-        if SAVE_ATTENTION:
-            self.saved_attention = attention_percents
-
-        # if torch.rand(1).item() < 0.002:
-        #     print(rounded_tensor_to_str(attention_percents))
 
         return attention_outputs
 
@@ -646,18 +529,12 @@ class MultiHeadAttention(nn.Module):
     def forward(self, encodings, mask):
         self.dim_info.check_encoding_shape(encodings)
         attention_scores_tot = torch.zeros_like(encodings)
-        # attention_scores_tot = prepend_singleton_dims(
-        #     attention_scores_tot, 4)
-        if SAVE_ATTENTION:
-            self.saved_attention = torch.zeros_like(encodings)
 
         # todo: Presumably there is a way to run these heads in parallel
         for head in self.attention_heads:
             attention_scores = head.forward(encodings, mask)
             self.dim_info.check_encoding_shape(attention_scores)
             attention_scores_tot += attention_scores
-            if SAVE_ATTENTION:
-                self.saved_attention += head.saved_attention
         self.dim_info.check_encoding_shape(attention_scores_tot)
         return attention_scores_tot
 
@@ -677,17 +554,18 @@ class FFN_2_layer(nn.Module):
 
 
 class AttentionLayers(nn.Module):
-    def __init__(self, d_model, num_heads, d_ffn, num_attn_layers, d_qk, d_vo, dim_info: DimInfo):
+    def __init__(self,
+                 btp: BasicTransformerParams,
+                 dim_info: DimInfo):
         super().__init__()
         self.dim_info = dim_info
-        self.dim_info.d_ffn = d_ffn
-        self.dim_info.d_qk = d_qk
-        self.dim_info.d_vo = d_vo
+        self.dim_info.d_ffn = btp.d_ffn
+        self.dim_info.d_qk = btp.d_qk
+        self.dim_info.d_vo = btp.d_vo
         self.attn_layers = nn.ModuleList()
-        self.num_layers = num_attn_layers
-        for _ in range(num_attn_layers):
-            attention_layer = AttentionLayer(
-                d_model=d_model, num_heads=num_heads, d_ffn=d_ffn, d_qk=d_qk, d_vo=d_vo, dim_info=dim_info)
+        self.num_layers = btp.num_attn_layers
+        for _ in range(btp.num_attn_layers):
+            attention_layer = AttentionLayer(btp, dim_info)
             self.attn_layers.append(attention_layer)
 
     def forward(self, encodings, mask):
@@ -712,61 +590,39 @@ def compare_attn_outputs(attn_output: torch.Tensor, attn_output2: torch.Tensor):
 class DecoderOnlyTransformer(nn.Module):
     # class DecoderOnlyTransformer(L.LightningModule):
 
-    def __init__(self, num_tokens, d_model, max_len):
+    def __init__(self, btp: BasicTransformerParams, num_tokens):
 
         super().__init__()
 
-        self.dim_info = DimInfo(d_model=d_model)
+        self.btp = btp
+        self.dim_info = DimInfo(d_model=btp.d_model)
 
         self.vocab_size = num_tokens
-        self.max_num_inputs = max_len
+        self.max_num_inputs = btp.max_input_tokens
 
         # token embedding
         self.we = nn.Embedding(num_embeddings=num_tokens,
-                               embedding_dim=d_model)
+                               embedding_dim=btp.d_model)
         # print(f'self.we.weight.data:\n{self.we.weight.data}')
 
         # position encoding
-        self.pe = PositionEncoding(d_model=d_model,
-                                   max_len=max_len)
+        self.pe = PositionEncoding(d_model=btp.d_model,
+                                   max_len=btp.max_input_tokens)
 
-        # # attention head(s)
-        # if not MULTI_HEAD:
-        #     print('single head')
-        #     self.self_attention = AttentionHead(d_model=d_model)
-        # else:
-        #     print(f'multihead, num_heads={NUM_ATTN_HEADS}')
-        #     self.self_attention = MultiHeadAttention(
-        #         d_model=d_model, num_heads=NUM_ATTN_HEADS)
-
-        # # FFN layer
-        # if USE_2FFN:
-        #     self.fc_layer = FFN_2_layer(d_model, D_FFN, d_model)
-        # else:
-        #     self.fc_layer = nn.Linear(
-        #         in_features=d_model, out_features=d_model)
-
-        if not USE_ATTN_LAYERS:
-            self.attn_layer = AttentionLayer(
-                d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN, d_qk=D_QK, d_vo=D_VO, dim_info=self.dim_info)
+        if not btp.use_attn_layers:
+            self.attn_layer = AttentionLayer(btp, self.dim_info)
         else:
-            self.attn_layer = AttentionLayers(
-                d_model=d_model, num_heads=NUM_ATTN_HEADS, d_ffn=D_FFN,
-                num_attn_layers=NUM_ATTN_LAYERS, d_qk=D_QK, d_vo=D_VO, dim_info=self.dim_info)
+            self.attn_layer = AttentionLayers(btp, self.dim_info)
 
         # final FC for token classification (outputs logits)
         self.tok_classifier = nn.Linear(
-            in_features=d_model, out_features=num_tokens)
+            in_features=btp.d_model, out_features=num_tokens)
 
         self.loss = nn.CrossEntropyLoss()
 
         self.saved_token_IDs = torch.Tensor()
 
         self.printed_mask = False
-        if VERBOSE:
-            print('we:', self.we.weight.shape)
-            print('pe:', self.pe.pe.shape)
-            # print('fc_layer:', self.fc_layer.weight.shape)
 
         # count number of forward() calls, for debugging
         self.forward_counter = 0
@@ -780,13 +636,6 @@ class DecoderOnlyTransformer(nn.Module):
         self.dim_info.this_batch_size = token_ids.shape[0]
         self.dim_info.num_inputs = token_ids.shape[1]
 
-        # global DEBUG_ATTN
-        # self.forward_counter += 1
-        # if self.forward_counter == 3:
-        #     DEBUG_ATTN = True
-        if SAVE_ATTENTION:
-            self.saved_token_IDs = token_ids
-
         word_embeddings = self.we(token_ids)
         self.dim_info.check_encoding_shape(word_embeddings)
 
@@ -795,36 +644,11 @@ class DecoderOnlyTransformer(nn.Module):
 
         num_inputs = token_ids.shape[1]
         mask = torch.tril(torch.ones(
-            (num_inputs, num_inputs), device=DEVICE))
+            (num_inputs, num_inputs), device=self.btp.device))
         mask = mask == 0
-        if VERBOSE and not self.printed_mask:
-            print('mask:', mask.data)
-            print('mask shape:', mask.shape)
-            self.printed_mask = True
-
-        # attention_input = position_encoded
-
-        # self_attention_values = self.self_attention(attention_input,
-        #                                             attention_input,
-        #                                             attention_input,
-        #                                             mask=mask)
-
-        # residual_connection_values = position_encoded + self_attention_values
-        # fc_layer_output = self.fc_layer(residual_connection_values)
-
-        # print(f'\nDecoderOnlyTransformer.forward(), ' +
-        #       f'execution {self.forward_counter}')
-
-        if VERBOSE:
-            print('before attn layer')
-            print(f'position_encoded: {position_encoded}')
-            print(f'mask: {mask}')
 
         attn_output = self.attn_layer(position_encoded, mask)
         self.dim_info.check_encoding_shape(attn_output)
-        if VERBOSE:
-            print('after attn layer')
-            print(f'attn_output: {attn_output}')
 
         tok_class_output = self.tok_classifier(attn_output)
 
@@ -834,7 +658,7 @@ class DecoderOnlyTransformer(nn.Module):
         return self.self_attention.saved_attention
 
     def configure_optimizers(self):
-        return Adam(self.parameters(), lr=LEARNING_RATE)
+        return Adam(self.parameters(), lr=self.btp.learning_rate)
 
     def training_step(self, batch, batch_idx):
         input_tokens, labels = batch  # collect input
@@ -846,7 +670,7 @@ class DecoderOnlyTransformer(nn.Module):
 
 def predict_top(model, model_input, num_top):
     # last row (final token) only
-    logits = model(model_input.to(DEVICE))[-1, :]
+    logits = model(model_input.to(model.btp.device))[-1, :]
     probs = F.softmax(logits, dim=0)
     top_probs, top_indices = torch.topk(probs, num_top)
     for idx, prob in zip(top_indices, top_probs):
@@ -858,7 +682,7 @@ def predict(model, model_input, max_len):
     input_length = model_input.size(dim=0)
 
     # get predictions (logits) from the model
-    predictions = model(model_input.to(DEVICE))
+    predictions = model(model_input.to(model.btp.device))
     # Since we only want the prediction from the
     # last row (the most recent prediction) we use reverse index for the
     # row, -1.
@@ -877,7 +701,7 @@ def predict(model, model_input, max_len):
 
         model_input = torch.cat((model_input, predicted_id))
 
-        predictions = model(model_input.to(DEVICE))
+        predictions = model(model_input.to(model.btp.device))
         predicted_id = torch.tensor([torch.argmax(predictions[-1, :])])
         predicted_ids = torch.cat((predicted_ids, predicted_id))
 
@@ -902,33 +726,30 @@ def compare_model_params(models):
 def evaluate_gradient(model, x, y):
     model.train()
     model.zero_grad()
-    y_pred = model(x.to(DEVICE))  # Perform a forward pass
-    loss = model.loss(y_pred, y.to(DEVICE))
+    y_pred = model(x.to(model.btp.device))  # Perform a forward pass
+    loss = model.loss(y_pred, y.to(model.btp.device))
     # print(f'loss {loss}')
     loss.backward()
 
 
 def calc_pred_and_loss(model: nn.Module, X: torch.Tensor, y: torch.Tensor):
-    y_pred = model(X.to(DEVICE))
+    y_pred = model(X.to(model.btp.device))
+
+    # Ensure y is 2d and y_pred 3d
+    y = prepend_singleton_dims(y, 2)
+    y_pred = prepend_singleton_dims(y_pred, 3)
+    if y_pred.ndim == 4:
+        y_pred = y_pred.squeeze(0)
     # See my diary entry for 10/23/2024 for detailed explanation of this transpose.
-    # Basically, when we have a batch size greater than one,
-    # then the first dimension of y_pred should be the batches (which is correct already),
+    # Basically, the first dimension of y_pred should be the batches (which is correct already),
     # but the second should be the different possible classes
     # (i.e. ranging over the whole vocabulary of tokens),
     # but this is currently in the wrong place so we need to swap
     # it from the third dimension.
     # e.g. batch size 2, vocab size 10, input len 5 gives y_pred
     # with shape 2,5,10 but gets transposed to 2,10,5.
-    # if y_pred.ndim > 2:
-    #     y_pred.transpose_(dim0=-2, dim1=-1)
-    y = prepend_singleton_dims(y, 2)
-    y_pred = prepend_singleton_dims(y_pred, 3)
-    if y_pred.ndim == 4:
-        y_pred = y_pred.squeeze(0)
     y_pred.transpose_(dim0=-2, dim1=-1)
-    # print(f'y_pred.shape {y_pred.shape}')
-    # print(f'y.shape {y.shape}')
-    loss = model.loss(y_pred, y.to(DEVICE))
+    loss = model.loss(y_pred, y.to(model.btp.device))
     return y_pred, loss
 
 
@@ -944,33 +765,17 @@ def do_training_step(model: torch.nn.Module, optimizer, X: torch.Tensor, y: torc
     if y.ndim == 1:
         y.unsqueeze_(-1)
 
-    X = X.to(DEVICE)
-    y = y.to(DEVICE)
-    # print('about to calc y_pred')
-    # print(f'X {X}')
-    # print(f'y {y}')
+    X = X.to(model.btp.device)
+    y = y.to(model.btp.device)
     y_pred = model(X)
-    if VERBOSE:
-        print('applied model and returned y_pred')
-        print(f'y_pred {y_pred}')
     y_pred, loss = calc_pred_and_loss(model, X, y)
-    # print('calculated loss, about to zero grad')
-    # print(f'y_pred {y_pred}')
-    # print(f'loss {loss}')
     optimizer.zero_grad()
-    # print(f"did zero_grad, params:")
-    # print_params(model)
-    # print_gradients(model)
     loss.backward()
-    # print(f"did loss.backward(), params:")
-    # print_params(model)
-    # print_gradients(model)
     optimizer.step()
-    # print(loss.item())
     # I believe the cross entropy loss will compute the average loss,
     # so we need to multiply by the number of training samples in
     # the batch.
-    batch_size = y_pred.shape[0] if y_pred.ndim > 2 else 1
+    batch_size = y_pred.shape[0]
     aggregate_loss = loss.item() * batch_size
     if print_loss:
         print(f'batch_size {batch_size}, ' +
@@ -992,9 +797,9 @@ def do_epoch(model, optimizer, dataloader, print_loss=False):
 def do_epochs(model, optimizer, dataloader):
     model.train()
     start_time = time.time()
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(model.btp.num_epochs):
         total_loss = do_epoch(model, optimizer, dataloader)
-        if (epoch+1) % LOSS_PRINT_FREQ == 0 or epoch == 0 or epoch == NUM_EPOCHS-1:
+        if (epoch+1) % model.btp.loss_print_freq == 0 or epoch == 0 or epoch == model.btp.num_epochs-1:
             avg_loss = total_loss / len(dataloader.dataset)
             print(f'epoch: {epoch}, avg_loss: {avg_loss:.5f}')
     end_time = time.time()
@@ -1004,17 +809,15 @@ def do_epochs(model, optimizer, dataloader):
     return avg_loss
 
 
-def create_model(batch_size):
-    # L.seed_everything(seed=THE_SEED)
-    torch.manual_seed(THE_SEED)
-    print(f'torch.manual_seed: {THE_SEED}')
+def create_model(btp: BasicTransformerParams):
+    torch.manual_seed(btp.seed)
+    print(f'torch.manual_seed: {btp.seed}')
 
-    model = DecoderOnlyTransformer(num_tokens=len(
-        token_to_id), d_model=D_MODEL, max_len=MAX_INPUT_TOKENS)
-    model.to(DEVICE)
+    model = DecoderOnlyTransformer(btp, num_tokens=len(token_to_id), )
+    model.to(btp.device)
     model.train()
-    optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
-    dataloader = DataLoader(dataset, batch_size=batch_size)
+    optimizer = Adam(model.parameters(), lr=btp.learning_rate)
+    dataloader = DataLoader(DATASET, batch_size=btp.batch_size)
     return model, optimizer, dataloader
 
 
@@ -1041,16 +844,11 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
     num_errs = 0
     num_response_errs = 0
     for batch, (X, y) in enumerate(dataloader):
-        y_pred = model(X.to(DEVICE))
+        y_pred = model(X.to(model.btp.device))
         predicted_ids = torch.argmax(y_pred, dim=-1)
-        # print(f'X: {X}')
-        # print(f'y_pred: {y_pred}')
-        # print(f'y: {y}')
-        # print(f'predicted_ids: {predicted_ids}')
         mispredictions = (y - predicted_ids).bool().squeeze(0)
         this_num_errs = torch.count_nonzero(mispredictions).item()
         num_errs += this_num_errs
-        # print(f'this_num_errs: {this_num_errs}')
         if this_num_errs > 0:
             msg = '\nerrors:' if not response_errs_only else '\nresponse errors:'
             printed_msg = False
@@ -1107,12 +905,12 @@ def rounded_tensor_to_str(tensor, precision=2):
 
 
 def multi_count_response_errors(batch_size, num_trials):
-    global THE_SEED
-    start_seed = 48  # 4242
+    btp = BasicTransformerParams()
+    start_seed = 48
     total_errs = 0
     for trial in range(num_trials):
-        THE_SEED = start_seed + trial
-        model, optimizer, dataloader = create_model(batch_size=batch_size)
+        btp.seed = start_seed + trial
+        model, optimizer, dataloader = create_model(btp, batch_size=batch_size)
         do_epochs(model, optimizer, dataloader)
         response_errs = count_errors(
             model, dataloader, response_errs_only=True)
@@ -1120,7 +918,6 @@ def multi_count_response_errors(batch_size, num_trials):
         total_errs += response_errs
     avg_errs = total_errs / num_trials
     print(f'avg_errs: {avg_errs}')
-    # print_params(model)
 
 
 def print_gradients(model: nn.Module):
@@ -1136,55 +933,51 @@ def print_params(model: nn.Module):
         print(f"{name}:\n{param.data}")
 
 
-def copy_attn_multi_to_compact(multi_model, compact_model, num_heads, d_model, d_qk, d_vo):
+def copy_attn_multi_to_compact(btp: BasicTransformerParams, multi_model, compact_model):
     multi_attn = multi_model.attn_layer.self_attention
     compact_attn = compact_model.attn_layer.self_attention
-    # print('multi:')
-    # print_params(multi_attn)
 
     c = compact_attn
     m = multi_attn.attention_heads
+    d_qk = btp.d_qk
+    d_vo = btp.d_vo
 
     with torch.no_grad():
-        for h in range(num_heads):
+        for h in range(btp.num_attn_heads):
             c.W_q.weight[h*d_qk:(h+1)*d_qk, :] = m[h].W_q.weight
             c.W_k.weight[h*d_qk:(h+1)*d_qk, :] = m[h].W_k.weight
             c.W_v.weight[h*d_vo:(h+1)*d_vo, :] = m[h].W_v.weight
             c.W_o.weight[:, h*d_vo:(h+1)*d_vo] = m[h].W_o.weight
 
-    # print('compact:')
-    # print_params(compact_attn)
-
 
 def main5():
-    global ATTN_HEAD_CONFIG, BATCH_SIZE, USE_ATTN_LAYERS, USE_2FFN, NUM_ATTN_HEADS
-    NUM_ATTN_HEADS = 2
-    ATTN_HEAD_CONFIG = 'multi'
-    multi, _, _ = create_model(batch_size=BATCH_SIZE)
-    ATTN_HEAD_CONFIG = 'multicompact'
-    compact, _, _ = create_model(batch_size=BATCH_SIZE)
-    copy_attn_multi_to_compact(
-        multi, compact, NUM_ATTN_HEADS, D_MODEL, D_QK, D_VO)
+    btp = BasicTransformerParams()
+    btp.num_attn_heads = 2
+    btp.attn_head_config = 'multi'
+    multi, _, _ = create_model(btp, batch_size=btp.batch_size)
+    btp.attn_head_config = 'multicompact'
+    compact, _, _ = create_model(btp, batch_size=btp.batch_size)
+    copy_attn_multi_to_compact(btp, multi, compact)
 
 
-def main():
-    global ATTN_HEAD_CONFIG, BATCH_SIZE, USE_ATTN_LAYERS, USE_2FFN, NUM_ATTN_HEADS
-    NUM_ATTN_HEADS = 3
-    for BATCH_SIZE in [1, 5]:
-        for USE_ATTN_LAYERS in [False, ]:
-            for USE_2FFN in [False, True]:
+def main8():
+    btp = BasicTransformerParams()
+
+    btp.num_attn_heads = 3
+    for btp.batch_size in [1, 5]:
+        for btp.use_attn_layers in [False, ]:
+            for btp.use_2ffn in [False, True]:
                 models_etc = dict()
-                for ATTN_HEAD_CONFIG in ['multi', 'multicompact']:
-                    model, optimizer, dataloader = create_model(
-                        batch_size=BATCH_SIZE)
-                    models_etc[ATTN_HEAD_CONFIG] = (
+                for btp.attn_head_config in ['multi', 'multicompact']:
+                    model, optimizer, dataloader = create_model(btp)
+                    models_etc[btp.attn_head_config] = (
                         model, optimizer, dataloader)
                 copy_attn_multi_to_compact(models_etc['multi'][0],
                                            models_etc['multicompact'][0],
-                                           NUM_ATTN_HEADS, D_MODEL, D_QK, D_VO)
-                for ATTN_HEAD_CONFIG in ['multi', 'multicompact']:
+                                           btp.num_attn_heads, btp.d_model)
+                for btp.attn_head_config in ['multi', 'multicompact']:
                     max_steps = 3
-                    model, optimizer, dataloader = models_etc[ATTN_HEAD_CONFIG]
+                    model, optimizer, dataloader = models_etc[btp.attn_head_config]
                     for step, (X, y) in enumerate(dataloader):
                         # print(f"starting step {step}, params:")
                         # print_params(model)
@@ -1199,15 +992,14 @@ def main():
 
 
 def main3():
-    global ATTN_HEAD_CONFIG, BATCH_SIZE, USE_ATTN_LAYERS, USE_2FFN
+    btp = BasicTransformerParams()
 
-    for ATTN_HEAD_CONFIG in ['single', 'multi', 'multicompact']:
-        for BATCH_SIZE in [1, 5]:
-            for USE_ATTN_LAYERS in [False, True]:
-                for USE_2FFN in [False, True]:
+    for btp.attn_head_config in ['single', 'multi', 'multicompact']:
+        for btp.batch_size in [1, 5]:
+            for btp.use_attn_layers in [False, True]:
+                for btp.use_2ffn in [False, True]:
                     max_steps = 3
-                    model, optimizer, dataloader = create_model(
-                        batch_size=BATCH_SIZE)
+                    model, optimizer, dataloader = create_model(btp)
                     for step, (X, y) in enumerate(dataloader):
                         # print(f"starting step {step}, params:")
                         # print_params(model)
@@ -1220,68 +1012,10 @@ def main3():
 
     return
 
-    # global USE_ATTN_LAYERS
-    # for USE_ATTN_LAYERS in (False, True):
-    #     model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
-    #     do_epochs(model, optimizer, dataloader)
-    #     response_errs = count_errors(
-    #         model, dataloader, response_errs_only=True)
-    #     print(f'response_errs: {response_errs}')
 
+def main7():
 
-def main2():
-    global ATTN_HEAD_CONFIG
-    # ('single', 'multi', 'multicompact')
-    for ATTN_HEAD_CONFIG in ('multi', 'multicompact', ):
-        model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
-        do_epochs(model, optimizer, dataloader)
-        response_errs = count_errors(
-            model, dataloader, response_errs_only=True)
-        print(f'response_errs: {response_errs}')
-
-    # print('single training step')
-    # # ATTN_HEAD_CONFIG = 'single'
-    # ATTN_HEAD_CONFIG = 'multicompact'
-    # max_steps = 1
-    # torch.set_printoptions(precision=10)
-    # for ATTN_HEAD_CONFIG in ('multi', 'multicompact'):
-    #     model, optimizer, dataloader = create_model(batch_size=BATCH_SIZE)
-    #     print('before first training step...')
-    #     for step, (X, y) in enumerate(dataloader):
-    #         print(f"starting step {step}, params:")
-    #         print_params(model)
-    #         print_gradients(model)
-    #         if step >= max_steps:
-    #             break
-    #         print(f'training step {step}...')
-    #         do_training_step(model, optimizer, X, y, print_loss=True)
-
-    return
-
-    # batch_size = 1
-    # global MULTI_HEAD
-    # for MULTI_HEAD in True, False:
-    #     model, optimizer, dataloader = create_model(batch_size=batch_size)
-    #     do_epochs(model, optimizer, dataloader)
-    #     response_errs = count_errors(
-    #         model, dataloader, response_errs_only=True)
-    #     print(f'response_errs: {response_errs}')
-    # for batch, (X, y) in enumerate(dataloader):
-    #     loss = do_training_step(model, optimizer, X, y)
-    #     print(f'batch {batch}, loss {loss}')
-    # print_gradients(model)
-    # if batch >= 1:
-    #     break
-
-    # return
-
-    # global MULTI_HEAD
-    # for MULTI_HEAD in (True, ):
-    #     multi_count_response_errors(batch_size=5, num_trials=2)
-    # return
-
-    multi_count_response_errors(batch_size=BATCH_SIZE, num_trials=2)
-    return
+    btp = BasicTransformerParams()
 
     batch_sizes = [5]
     models = []
@@ -1289,7 +1023,7 @@ def main2():
     dataloaders = []
 
     for batch_size in batch_sizes:
-        model, optimizer, dataloader = create_model(batch_size=batch_size)
+        model, optimizer, dataloader = create_model(btp, batch_size=batch_size)
         models.append(model)
         optimizers.append(optimizer)
         dataloaders.append(dataloader)
@@ -1317,7 +1051,7 @@ def main2():
                   f'batch size {dataloader.batch_size}')
             for in_str in in_strs:
                 model_input = input_to_tensor(in_str)
-                pred_tokens = predict(model, model_input, MAX_INPUT_TOKENS)
+                pred_tokens = predict(model, model_input, btp.max_input_tokens)
                 print(in_str, ' -> ', ' '.join(pred_tokens))
             count_errors(model, dataloader, print_errs=True,
                          response_errs_only=True)
@@ -1326,8 +1060,6 @@ def main2():
         model = models[0]
         in_str = 'what is apple <EOS>'
         num_top = 3
-        global SAVE_ATTENTION
-        SAVE_ATTENTION = True
         predict_top(model, input_to_tensor(in_str), num_top=num_top)
         attention = model.get_saved_attention()
         token_ids = model.saved_token_IDs
@@ -1335,66 +1067,18 @@ def main2():
         print(f'attention\n{rounded_tensor_to_str(attention)}')
         print(f'tokens {tokens}')
 
-    # with torch.no_grad():
-    #     model = models[0]
-    #     SAVE_ATTENTION = True
-    #     for in_str in input_strings:
-    #         logits = model(input_to_tensor(in_str).to(DEVICE))
-    #         attention = model.get_saved_attention()
-    #         token_ids = model.saved_token_IDs
-    #         print('\n' + in_str)
-    #         print(rounded_tensor_to_str(attention))
 
-    # print('individual losses')
-    # for model, dataloader in zip(models, dataloaders):
-    #     print_individual_losses(model, dataloader)
+def main():
+    btp = BasicTransformerParams()
+    btp.d_model = 6
 
-    # print('single training step')
-    # for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
-    #     for X, y in dataloader:
-    #         do_training_step(model, optimizer, X, y, print_loss=True)
-    #         break
+    for btp.attn_head_config in ('multi', 'multicompact', ):
+        model, optimizer, dataloader = create_model(btp)
+        do_epochs(model, optimizer, dataloader)
+        response_errs = count_errors(
+            model, dataloader, response_errs_only=True)
+        print(f'response_errs: {response_errs}')
 
-    # print('single epoch')
-    # for model, optimizer, dataloader in zip(models, optimizers, dataloaders):
-    #     for X, y in dataloader:
-    #         do_epoch(model, optimizer, dataloader, print_loss=True)
-    #         break
-
-    # return
-
-
-#####################################################################
-#####################################################################
-#####################################################################
-#####################################################################
-
-    # # Now create the input for the transformer...
-    # model_input = input_to_tensor('what is statquest <EOS>')
-    # pred_tokens = predict(model, model_input, max_length)
-    # print('Predictions before training:')
-    # print(pred_tokens)
-
-    # trainer = L.Trainer(max_epochs=30)
-    # trainer.fit(model, train_dataloaders=dataloader)
-
-    # pred_tokens = predict(model, model_input, max_length)
-    # print('Predictions after training:')
-    # print(pred_tokens)
-
-    # print('Additional tests:')
-    # in_strs = ['statquest is what <EOS>',
-    #            'statquest is',
-    #            'what is',
-    #            'what',
-    #            'what is apple <EOS>',
-    #            'what is banana <EOS>',
-    #            'fruit <EOS>',
-    #            ]
-    # for in_str in in_strs:
-    #     model_input = input_to_tensor(in_str)
-    #     pred_tokens = predict(model, model_input, max_length)
-    #     print(in_str, ' -> ', ' '.join(pred_tokens))
 
 if __name__ == "__main__":
     main()

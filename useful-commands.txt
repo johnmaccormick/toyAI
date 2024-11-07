@@ -9,7 +9,8 @@ venv\Scripts\activate.bat
 
 run single test:
 
-python .\test_basic_transformer_v6.py TestBasicTransformer.test_bigger_dims
+python .\test_basic_transformer.py TestBasicTransformer.test_bigger_dims
+python .\test_basic_transformer.py TestBasicTransformer.test_single_head
 
 
 
