@@ -9,61 +9,9 @@ import torch.nn as nn  # torch.nn gives us nn.Module(), nn.Embedding() and nn.Li
 import torch  # torch let's us create tensors and also provides helper functions
 import torch.nn.functional as F  # This gives us the softmax() and argmax()
 
+# use Saver() for debgging if necessary
 # from jm_util import Saver
-
-
-token_to_id = {'what': 0,
-               'is': 1,
-               'statquest': 2,
-               'awesome': 3,
-               '<EOS>': 4,  # <EOS> = end of sequence
-               'apple': 5,
-               'banana': 6,
-               'grape': 7,
-               'pear': 8,
-               'fruit': 9,
-               '<PAD>': 10,
-               }
-VOCAB_SIZE = len(token_to_id)
-id_to_token = dict(map(reversed, token_to_id.items()))
-
-pad_idx = token_to_id['<PAD>']
-
-
-def input_to_IDs(input_str):
-    return [token_to_id[w] for w in input_str.split()]
-
-
-def input_to_tensor(input_str):
-    return torch.tensor(input_to_IDs(input_str))
-
-
-def inputs_to_tensor(input_strs):
-    return torch.tensor([input_to_IDs(input_str) for input_str in input_strs])
-
-
-def advance_input(input_str):
-    words = input_str.split()
-    del words[0]
-    words.append('<EOS>')
-    return ' '.join(words)
-
-
-def ids_to_string(ids):
-    # ids is a 1D  tensor containing token IDs
-    tokens = [id_to_token[ids[i].item()] for i in range(len(ids))]
-    return ' '.join(tokens)
-
-
-def add_padding(ids_list):
-    # ids_list is list of tensors
-    max_len = max(map(len, ids_list))
-    for i, ids in enumerate(ids_list):
-        pad_len = max_len - len(ids)
-        if pad_len > 0:
-            padding = torch.full((pad_len,), pad_idx)
-            padded_tensor = torch.cat((ids, padding))
-            ids_list[i] = padded_tensor
+# SAVER = Saver()
 
 
 class Data(Dataset):
@@ -79,29 +27,83 @@ class Data(Dataset):
         return self.len
 
 
-input_strings = ['what is statquest <EOS> awesome',
-                 'what is statquest <EOS> awesome',
-                 'what is statquest <EOS> awesome',
-                 'statquest is what <EOS> awesome',
-                 'what is apple <EOS> fruit',
-                 'what is banana <EOS> fruit',
-                 'fruit <EOS> pear grape',
-                 'pear <EOS> pear',
-                 'grape <EOS> grape',
-                 ]
+class Corpus:
+    def __init__(self):
+        self.token_to_id = {'what': 0,
+                            'is': 1,
+                            'statquest': 2,
+                            'awesome': 3,
+                            '<EOS>': 4,  # <EOS> = end of sequence
+                            'apple': 5,
+                            'banana': 6,
+                            'grape': 7,
+                            'pear': 8,
+                            'fruit': 9,
+                            '<PAD>': 10,
+                            }
 
-# input_strings = ['what is']
+        self.vocab_size = len(self.token_to_id)
+        self.id_to_token = dict(map(reversed, self.token_to_id.items()))
 
-inputs = [input_to_tensor(input_string) for input_string in input_strings]
-advanced_inputs = [advance_input(input_str) for input_str in input_strings]
-labels = [input_to_tensor(advanced_input)
-          for advanced_input in advanced_inputs]
+        self.pad_idx = self.token_to_id['<PAD>']
 
-add_padding(inputs)
-add_padding(labels)
-DATASET = Data(inputs, labels)
+        self.input_strings = ['what is statquest <EOS> awesome',
+                              'what is statquest <EOS> awesome',
+                              'what is statquest <EOS> awesome',
+                              'statquest is what <EOS> awesome',
+                              'what is apple <EOS> fruit',
+                              'what is banana <EOS> fruit',
+                              'fruit <EOS> pear grape',
+                              'pear <EOS> pear',
+                              'grape <EOS> grape',
+                              ]
 
-# SAVER = Saver()
+        # input_strings = ['what is']
+
+        self.inputs = [self.input_to_tensor(input_string)
+                       for input_string in self.input_strings]
+        advanced_inputs = [self.advance_input(
+            input_str) for input_str in self.input_strings]
+        self.labels = [self.input_to_tensor(advanced_input)
+                       for advanced_input in advanced_inputs]
+
+        self.add_padding(self.inputs)
+        self.add_padding(self.labels)
+        self.DATASET = Data(self.inputs, self.labels)
+
+    def input_to_IDs(self, input_str):
+        return [self.token_to_id[w] for w in input_str.split()]
+
+    def input_to_tensor(self, input_str):
+        return torch.tensor(self.input_to_IDs(input_str))
+
+    def inputs_to_tensor(self, input_strs):
+        return torch.tensor([self.input_to_IDs(input_str) for input_str in input_strs])
+
+    def advance_input(self, input_str):
+        words = input_str.split()
+        del words[0]
+        words.append('<EOS>')
+        return ' '.join(words)
+
+    def ids_to_string(self, ids):
+        # ids is a 1D  tensor containing token IDs
+        tokens = [self.id_to_token[ids[i].item()] for i in range(len(ids))]
+        return ' '.join(tokens)
+
+    def add_padding(self, ids_list):
+        # ids_list is list of tensors
+        max_len = max(map(len, ids_list))
+        for i, ids in enumerate(ids_list):
+            pad_len = max_len - len(ids)
+            if pad_len > 0:
+                padding = torch.full((pad_len,), self.pad_idx)
+                padded_tensor = torch.cat((ids, padding))
+                ids_list[i] = padded_tensor
+
+
+# global singleton
+CORPUS = Corpus()
 
 
 class BasicTransformerParams():
@@ -674,7 +676,7 @@ def predict_top(model, model_input, num_top):
     probs = F.softmax(logits, dim=0)
     top_probs, top_indices = torch.topk(probs, num_top)
     for idx, prob in zip(top_indices, top_probs):
-        token = id_to_token[idx.item()]
+        token = CORPUS.id_to_token[idx.item()]
         print(f'{token}: {prob:.2f}')
 
 
@@ -696,7 +698,7 @@ def predict(model, model_input, max_len):
 
     for i in range(input_length, max_len):
         # if the prediction is <EOS>, then we are done
-        if (predicted_id == token_to_id["<EOS>"]):
+        if (predicted_id == CORPUS.token_to_id["<EOS>"]):
             break
 
         model_input = torch.cat((model_input, predicted_id))
@@ -705,7 +707,7 @@ def predict(model, model_input, max_len):
         predicted_id = torch.tensor([torch.argmax(predictions[-1, :])])
         predicted_ids = torch.cat((predicted_ids, predicted_id))
 
-    return [id_to_token[id.item()] for id in predicted_ids]
+    return [CORPUS.id_to_token[id.item()] for id in predicted_ids]
 
 
 def compare_model_params(models):
@@ -813,11 +815,11 @@ def create_model(btp: BasicTransformerParams):
     torch.manual_seed(btp.seed)
     print(f'torch.manual_seed: {btp.seed}')
 
-    model = DecoderOnlyTransformer(btp, num_tokens=len(token_to_id), )
+    model = DecoderOnlyTransformer(btp, num_tokens=len(CORPUS.token_to_id), )
     model.to(btp.device)
     model.train()
     optimizer = Adam(model.parameters(), lr=btp.learning_rate)
-    dataloader = DataLoader(DATASET, batch_size=btp.batch_size)
+    dataloader = DataLoader(CORPUS.DATASET, batch_size=btp.batch_size)
     return model, optimizer, dataloader
 
 
@@ -859,7 +861,7 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
             for i in range(this_batch_size):
                 mispreds = mispredictions[i]
                 if response_errs_only:
-                    idx = find_val(y[i], token_to_id['<EOS>'])
+                    idx = find_val(y[i], CORPUS.token_to_id['<EOS>'])
                     if idx >= 0:
                         relevant_mispreds = mispreds[idx+1:]
                     else:
@@ -876,9 +878,9 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
                         pred_IDs = predicted_ids[i]
                         true_IDs = y[i]
                         print()
-                        print(f'input_IDs: {ids_to_string(input_IDs)}')
-                        print(f'pred_IDs: {ids_to_string(pred_IDs)}')
-                        print(f'true_IDs: {ids_to_string(true_IDs)}')
+                        print(f'input_IDs: {CORPUS.ids_to_string(input_IDs)}')
+                        print(f'pred_IDs: {CORPUS.ids_to_string(pred_IDs)}')
+                        print(f'true_IDs: {CORPUS.ids_to_string(true_IDs)}')
 
     print(f'num_errs: {num_errs}')
     if response_errs_only:
@@ -902,22 +904,6 @@ def print_individual_losses(model, dataloader):
 def rounded_tensor_to_str(tensor, precision=2):
     return np.array_str(
         tensor.cpu().detach().numpy(), precision=precision, suppress_small=True)
-
-
-def multi_count_response_errors(batch_size, num_trials):
-    btp = BasicTransformerParams()
-    start_seed = 48
-    total_errs = 0
-    for trial in range(num_trials):
-        btp.seed = start_seed + trial
-        model, optimizer, dataloader = create_model(btp, batch_size=batch_size)
-        do_epochs(model, optimizer, dataloader)
-        response_errs = count_errors(
-            model, dataloader, response_errs_only=True)
-        print(f'response_errs: {response_errs}')
-        total_errs += response_errs
-    avg_errs = total_errs / num_trials
-    print(f'avg_errs: {avg_errs}')
 
 
 def print_gradients(model: nn.Module):
@@ -950,7 +936,7 @@ def copy_attn_multi_to_compact(btp: BasicTransformerParams, multi_model, compact
             c.W_o.weight[:, h*d_vo:(h+1)*d_vo] = m[h].W_o.weight
 
 
-def main5():
+def main1():
     btp = BasicTransformerParams()
     btp.num_attn_heads = 2
     btp.attn_head_config = 'multi'
@@ -960,7 +946,7 @@ def main5():
     copy_attn_multi_to_compact(btp, multi, compact)
 
 
-def main8():
+def main2():
     btp = BasicTransformerParams()
 
     btp.num_attn_heads = 3
@@ -1013,7 +999,7 @@ def main3():
     return
 
 
-def main7():
+def main4():
 
     btp = BasicTransformerParams()
 
@@ -1050,7 +1036,7 @@ def main7():
             print(f'\nmodel type {type(model)}, '
                   f'batch size {dataloader.batch_size}')
             for in_str in in_strs:
-                model_input = input_to_tensor(in_str)
+                model_input = CORPUS.input_to_tensor(in_str)
                 pred_tokens = predict(model, model_input, btp.max_input_tokens)
                 print(in_str, ' -> ', ' '.join(pred_tokens))
             count_errors(model, dataloader, print_errs=True,
@@ -1060,10 +1046,10 @@ def main7():
         model = models[0]
         in_str = 'what is apple <EOS>'
         num_top = 3
-        predict_top(model, input_to_tensor(in_str), num_top=num_top)
+        predict_top(model, CORPUS.input_to_tensor(in_str), num_top=num_top)
         attention = model.get_saved_attention()
         token_ids = model.saved_token_IDs
-        tokens = [id_to_token[t.item()] for t in token_ids]
+        tokens = [CORPUS.id_to_token[t.item()] for t in token_ids]
         print(f'attention\n{rounded_tensor_to_str(attention)}')
         print(f'tokens {tokens}')
 
