@@ -1,109 +1,22 @@
 import time
 import numpy as np
 
-# import lightning as L  # Lightning makes it easier to write, optimize and scale our code
-# We'll store our data in DataLoaders
 from torch.utils.data import Dataset, DataLoader
-from torch.optim import Adam  # We will use the Adam optimizer, which is, essentially,
-import torch.nn as nn  # torch.nn gives us nn.Module(), nn.Embedding() and nn.Linear()
-import torch  # torch let's us create tensors and also provides helper functions
-import torch.nn.functional as F  # This gives us the softmax() and argmax()
+from torch.optim import Adam
+import torch.nn as nn
+import torch
+import torch.nn.functional as F
+
+import corpus
 
 # use Saver() for debgging if necessary
 # from jm_util import Saver
 # SAVER = Saver()
 
 
-class Data(Dataset):
-    def __init__(self, X, Y):
-        self.X = X
-        self.Y = Y
-        self.len = len(X)
-
-    def __getitem__(self, index):
-        return self.X[index], self.Y[index]
-
-    def __len__(self):
-        return self.len
-
-
-class Corpus:
-    def __init__(self):
-        self.token_to_id = {'what': 0,
-                            'is': 1,
-                            'statquest': 2,
-                            'awesome': 3,
-                            '<EOS>': 4,  # <EOS> = end of sequence
-                            'apple': 5,
-                            'banana': 6,
-                            'grape': 7,
-                            'pear': 8,
-                            'fruit': 9,
-                            '<PAD>': 10,
-                            }
-
-        self.vocab_size = len(self.token_to_id)
-        self.id_to_token = dict(map(reversed, self.token_to_id.items()))
-
-        self.pad_idx = self.token_to_id['<PAD>']
-
-        self.input_strings = ['what is statquest <EOS> awesome',
-                              'what is statquest <EOS> awesome',
-                              'what is statquest <EOS> awesome',
-                              'statquest is what <EOS> awesome',
-                              'what is apple <EOS> fruit',
-                              'what is banana <EOS> fruit',
-                              'fruit <EOS> pear grape',
-                              'pear <EOS> pear',
-                              'grape <EOS> grape',
-                              ]
-
-        # input_strings = ['what is']
-
-        self.inputs = [self.input_to_tensor(input_string)
-                       for input_string in self.input_strings]
-        advanced_inputs = [self.advance_input(
-            input_str) for input_str in self.input_strings]
-        self.labels = [self.input_to_tensor(advanced_input)
-                       for advanced_input in advanced_inputs]
-
-        self.add_padding(self.inputs)
-        self.add_padding(self.labels)
-        self.DATASET = Data(self.inputs, self.labels)
-
-    def input_to_IDs(self, input_str):
-        return [self.token_to_id[w] for w in input_str.split()]
-
-    def input_to_tensor(self, input_str):
-        return torch.tensor(self.input_to_IDs(input_str))
-
-    def inputs_to_tensor(self, input_strs):
-        return torch.tensor([self.input_to_IDs(input_str) for input_str in input_strs])
-
-    def advance_input(self, input_str):
-        words = input_str.split()
-        del words[0]
-        words.append('<EOS>')
-        return ' '.join(words)
-
-    def ids_to_string(self, ids):
-        # ids is a 1D  tensor containing token IDs
-        tokens = [self.id_to_token[ids[i].item()] for i in range(len(ids))]
-        return ' '.join(tokens)
-
-    def add_padding(self, ids_list):
-        # ids_list is list of tensors
-        max_len = max(map(len, ids_list))
-        for i, ids in enumerate(ids_list):
-            pad_len = max_len - len(ids)
-            if pad_len > 0:
-                padding = torch.full((pad_len,), self.pad_idx)
-                padded_tensor = torch.cat((ids, padding))
-                ids_list[i] = padded_tensor
-
-
 # global singleton
-CORPUS = Corpus()
+CORPUS = corpus.Corpus(corpus.Statquest_inputs.token_to_id,
+                       corpus.Statquest_inputs.input_strings)
 
 
 class BasicTransformerParams():
@@ -819,7 +732,7 @@ def create_model(btp: BasicTransformerParams):
     model.to(btp.device)
     model.train()
     optimizer = Adam(model.parameters(), lr=btp.learning_rate)
-    dataloader = DataLoader(CORPUS.DATASET, batch_size=btp.batch_size)
+    dataloader = DataLoader(CORPUS.dataset, batch_size=btp.batch_size)
     return model, optimizer, dataloader
 
 
