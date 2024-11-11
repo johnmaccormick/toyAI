@@ -6,15 +6,15 @@ import corpus
 
 def main():
     btp = bt.BasicTransformerParams()
-    btp.num_epochs = 150
+    btp.num_epochs = 3  # 150
     btp.d_model = 4
     btp.num_attn_heads = 3
     btp.attn_head_config = 'multicompact'
     btp.use_2ffn = True
 
     num_in_strs = 100
-    inputs, labels = corpus.Synonym_inputs.make_inputs(
-        num_inputs=num_in_strs, seed=54545)
+    si = corpus.Synonym_inputs(seed=btp.seed)
+    inputs, labels = si.make_inputs(num_inputs=num_in_strs)
     corp = corpus.Corpus(input_strings=inputs)
     print(f'num_in_strs {num_in_strs}, vocab size {corp.vocab_size}')
     model, optimizer, dataloader = bt.create_model(btp, corp)
@@ -22,7 +22,7 @@ def main():
     response_errs = bt.count_errors(
         model, dataloader, response_errs_only=True, corp=corp)
     dataloader = DataLoader(corp.dataset, batch_size=1)
-    num_instances_to_print = 20
+    num_instances_to_print = 2
     for instance, (X, y) in enumerate(dataloader):
         if instance >= num_instances_to_print:
             break

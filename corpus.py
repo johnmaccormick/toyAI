@@ -121,77 +121,82 @@ class Statquest_inputs:
 
 
 class Synonym_inputs:
-    num_syn_lists = 2
-    fixed_order = True
+    def __init__(self, seed):
+        self.num_syn_lists = 2
+        self.fixed_order = True
+        self.rng = random.Random(seed)
 
-    syn_lists = [
-        frozenset(["happy", "joyful", "content"]),
-        frozenset(["fast", "quick", "speedy"]),
-        frozenset(["smart", "intelligent", "clever"])
-    ]
-    syn_lists = syn_lists[:num_syn_lists]
+        self.syn_lists = [
+            frozenset(["happy", "joyful", "content"]),
+            frozenset(["fast", "quick", "speedy"]),
+            frozenset(["smart", "intelligent", "clever"])
+        ]
+        self.syn_lists = self.syn_lists[:self.num_syn_lists]
 
-    # Flatten syn_list to get all words in a single list
-    all_words = frozenset(
-        [word for group in syn_lists for word in group])
+        # Flatten syn_list to get all words in a single list
+        self.all_words = frozenset(
+            [word for group in self.syn_lists for word in group])
 
-    syn_indexes = dict()  # str->int
-    for i, this_list in enumerate(syn_lists):
-        for word in this_list:
-            syn_indexes[word] = i
+        self.syn_indexes = dict()  # str->int
+        for i, this_list in enumerate(self.syn_lists):
+            for word in this_list:
+                self.syn_indexes[word] = i
 
-    def find_synonym(input_str: str):
-        si = Synonym_inputs
+    def find_synonym(self, input_str: str):
         words = input_str.split()
-        return si.find_synonym_in_list(words)
+        return self.find_synonym_in_list(words)
 
-    def find_synonym_in_list(words: list[str]):
-        si = Synonym_inputs
+    def find_synonym_in_list(self, words: list[str]):
         target = words[-1]
-        syns = si.syn_lists[si.syn_indexes[target]]
+        syns = self.syn_lists[self.syn_indexes[target]]
         for word in words[:-1]:
             if word in syns:
                 return word
         assert False, 'No synonym found'
 
-    def are_synonyms(word1, word2):
-        si = Synonym_inputs
-        return si.syn_indexes[word1] == si.syn_indexes[word2]
+    def are_synonyms(self, word1, word2):
+        return self.syn_indexes[word1] == self.syn_indexes[word2]
 
-    def make_input():
-        si = Synonym_inputs
+    def make_choice(self, vals):
+        # We sort the list so that,
+        # for a given rng state, the choice is deterministic.
+        # If the param vals is something like a set or frozen set,
+        # the order in which it is converted to a list seems to be
+        # nondeterministic.
+        return self.rng.choice(sorted(list(vals)))
+
+    def make_input(self):
         # Randomly choose one word from each inner list
-        chosen_words = [random.choice(list(group))
-                        for group in si.syn_lists]
-        if not si.fixed_order:
-            random.shuffle(chosen_words)
+        chosen_words = [self.make_choice(group)
+                        for group in self.syn_lists]
+        if not self.fixed_order:
+            self.rng.shuffle(chosen_words)
         # Filter out words already chosen
         remaining_words = [
-            word for word in Synonym_inputs.all_words if word not in chosen_words]
+            word for word in self.all_words if word not in chosen_words]
         # Choose one additional word that wasn't already chosen
-        additional_word = random.choice(remaining_words)
+        additional_word = self.make_choice(remaining_words)
         query = chosen_words + [additional_word]
-        syn = si.find_synonym_in_list(query)
+        syn = self.find_synonym_in_list(query)
         # Combine the chosen words into a single string
         result_string = ' '.join(query + ['<EOS>'] + [syn])
         return result_string
 
-    def make_inputs(num_inputs, seed):
-        random.seed(seed)
-        si = Synonym_inputs
+    def make_inputs(self, num_inputs):
         inputs = []
         labels = []
         for _ in range(num_inputs):
-            input_str = si.make_input()
-            label = si.find_synonym(input_str)
+            input_str = self.make_input()
+            label = self.find_synonym(input_str)
             inputs.append(input_str)
             labels.append(label)
         return inputs, labels
 
 
 def main():
-    inputs, labels = Synonym_inputs.make_inputs(
-        num_inputs=4, seed=54545)
+    seed = 54545
+    si = Synonym_inputs(seed)
+    inputs, labels = si.make_inputs(num_inputs=4)
     print([x for x in zip(inputs, labels)])
     # for input, label in zip(inputs, labels):
 
