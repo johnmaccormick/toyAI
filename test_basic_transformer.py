@@ -1,11 +1,19 @@
 import unittest
 import basic_transformer as bt
+import corpus
 
 
 class TestBasicTransformer(unittest.TestCase):
 
+    def get_Statquest_corpus(self):
+        sq = corpus.Statquest_inputs
+        corp = corpus.Corpus(token_to_id=sq.token_to_id,
+                             input_strings=sq.input_strings)
+        return corp
+
     # @unittest.skip("temp")
     def test_single_head(self):
+        corp = self.get_Statquest_corpus()
         btp = bt.BasicTransformerParams()
         btp.num_attn_heads = 1
         btp.d_qk = 1
@@ -23,15 +31,16 @@ class TestBasicTransformer(unittest.TestCase):
         for btp.attn_head_config in ['single', 'multi', 'multicompact']:
             for btp.batch_size in [1, 5]:
                 with self.subTest(batch_size=btp.batch_size, attn_head_config=btp.attn_head_config):
-                    model, optimizer, dataloader = bt.create_model(btp)
+                    model, optimizer, dataloader = bt.create_model(btp, corp)
                     avg_loss = bt.do_epochs(model, optimizer, dataloader)
                     self.assertAlmostEqual(
                         avg_loss, exp_avg_losses[(btp.attn_head_config, btp.batch_size)], places=5)
                     response_errs = bt.count_errors(
-                        model, dataloader, response_errs_only=True)
+                        model, dataloader, response_errs_only=True, corp=corp)
                     self.assertEqual(response_errs, 0)
 
     def test_bigger_dims(self):
+        corp = self.get_Statquest_corpus()
         btp = bt.BasicTransformerParams()
         btp.d_model = 6
         btp.use_attn_layers = False
@@ -43,16 +52,17 @@ class TestBasicTransformer(unittest.TestCase):
 
         exp_avg_loss = 0.10733
 
-        model, optimizer, dataloader = bt.create_model(btp)
+        model, optimizer, dataloader = bt.create_model(btp, corp)
         avg_loss = bt.do_epochs(model, optimizer, dataloader)
         self.assertAlmostEqual(
             avg_loss, exp_avg_loss, places=5)
         response_errs = bt.count_errors(
-            model, dataloader, response_errs_only=True)
+            model, dataloader, response_errs_only=True, corp=corp)
         self.assertEqual(response_errs, 0)
 
     # @unittest.skip("temp")
     def test_multilayer(self):
+        corp = self.get_Statquest_corpus()
         btp = bt.BasicTransformerParams()
         btp.use_attn_layers = True
         btp.num_attn_layers = 3
@@ -71,16 +81,17 @@ class TestBasicTransformer(unittest.TestCase):
 
         for btp.attn_head_config in ['single', 'multi', 'multicompact']:
             with self.subTest(attn_head_config=btp.attn_head_config):
-                model, optimizer, dataloader = bt.create_model(btp)
+                model, optimizer, dataloader = bt.create_model(btp, corp)
                 avg_loss = bt.do_epochs(model, optimizer, dataloader)
                 self.assertAlmostEqual(
                     avg_loss, exp_avg_losses[btp.attn_head_config], places=5)
                 response_errs = bt.count_errors(
-                    model, dataloader, response_errs_only=True)
+                    model, dataloader, response_errs_only=True, corp=corp)
                 self.assertEqual(response_errs, 0)
 
     # @unittest.skip("temp")
     def test_multihead(self):
+        corp = self.get_Statquest_corpus()
         btp = bt.BasicTransformerParams()
         btp.d_model = 4
         btp.num_attn_heads = 3
@@ -96,7 +107,7 @@ class TestBasicTransformer(unittest.TestCase):
 
         models_etc = dict()
         for btp.attn_head_config in ['multi', 'multicompact']:
-            model, optimizer, dataloader = bt.create_model(btp)
+            model, optimizer, dataloader = bt.create_model(btp, corp)
             models_etc[btp.attn_head_config] = (
                 model, optimizer, dataloader)
         bt.copy_attn_multi_to_compact(btp,
@@ -109,11 +120,12 @@ class TestBasicTransformer(unittest.TestCase):
                 self.assertAlmostEqual(
                     avg_loss, exp_avg_losses[btp.attn_head_config], places=5)
                 response_errs = bt.count_errors(
-                    model, dataloader, response_errs_only=True)
+                    model, dataloader, response_errs_only=True, corp=corp)
                 self.assertEqual(response_errs, 0)
 
     # @unittest.skip("temp")
     def test_multilayer_multihead(self):
+        corp = self.get_Statquest_corpus()
         btp = bt.BasicTransformerParams()
         btp.num_attn_heads = 2
         btp.use_attn_layers = True
@@ -132,15 +144,16 @@ class TestBasicTransformer(unittest.TestCase):
 
         for btp.attn_head_config in ['multi', 'multicompact']:
             with self.subTest(attn_head_config=btp.attn_head_config):
-                model, optimizer, dataloader = bt.create_model(btp)
+                model, optimizer, dataloader = bt.create_model(btp, corp)
                 avg_loss = bt.do_epochs(model, optimizer, dataloader)
                 self.assertAlmostEqual(
                     avg_loss, exp_avg_losses[btp.attn_head_config], places=5)
                 response_errs = bt.count_errors(
-                    model, dataloader, response_errs_only=True)
+                    model, dataloader, response_errs_only=True, corp=corp)
                 self.assertEqual(response_errs, 0)
 
     def test_quick_all_configs(self):
+        corp = self.get_Statquest_corpus()
         btp = bt.BasicTransformerParams()
         btp.d_model = 8
         btp.d_qk = 4
@@ -156,7 +169,8 @@ class TestBasicTransformer(unittest.TestCase):
                                           use_attn_layers=btp.use_attn_layers,
                                           use_2ffn=btp.use_2ffn):
                             max_steps = 3
-                            model, optimizer, dataloader = bt.create_model(btp)
+                            model, optimizer, dataloader = bt.create_model(
+                                btp, corp)
                             for step, (X, y) in enumerate(dataloader):
                                 # print(f"starting step {step}, params:")
                                 # print_params(model)

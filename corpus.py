@@ -62,6 +62,7 @@ class Corpus:
 
     def ids_to_string(self, ids):
         # ids is a 1D  tensor containing token IDs
+        assert ids.ndim == 1
         tokens = [self.id_to_token[ids[i].item()] for i in range(len(ids))]
         return ' '.join(tokens)
 
@@ -120,24 +121,34 @@ class Statquest_inputs:
 
 
 class Synonym_inputs:
-    syn_list = [
+    num_syn_lists = 2
+    fixed_order = True
+
+    syn_lists = [
         frozenset(["happy", "joyful", "content"]),
         frozenset(["fast", "quick", "speedy"]),
         frozenset(["smart", "intelligent", "clever"])
     ]
+    syn_lists = syn_lists[:num_syn_lists]
+
     # Flatten syn_list to get all words in a single list
-    all_words = frozenset([word for group in syn_list for word in group])
+    all_words = frozenset(
+        [word for group in syn_lists for word in group])
 
     syn_indexes = dict()  # str->int
-    for i, this_list in enumerate(syn_list):
+    for i, this_list in enumerate(syn_lists):
         for word in this_list:
             syn_indexes[word] = i
 
     def find_synonym(input_str: str):
         si = Synonym_inputs
         words = input_str.split()
+        return si.find_synonym_in_list(words)
+
+    def find_synonym_in_list(words: list[str]):
+        si = Synonym_inputs
         target = words[-1]
-        syns = si.syn_list[si.syn_indexes[target]]
+        syns = si.syn_lists[si.syn_indexes[target]]
         for word in words[:-1]:
             if word in syns:
                 return word
@@ -148,17 +159,21 @@ class Synonym_inputs:
         return si.syn_indexes[word1] == si.syn_indexes[word2]
 
     def make_input():
+        si = Synonym_inputs
         # Randomly choose one word from each inner list
         chosen_words = [random.choice(list(group))
-                        for group in Synonym_inputs.syn_list]
-        random.shuffle(chosen_words)
+                        for group in si.syn_lists]
+        if not si.fixed_order:
+            random.shuffle(chosen_words)
         # Filter out words already chosen
         remaining_words = [
             word for word in Synonym_inputs.all_words if word not in chosen_words]
         # Choose one additional word that wasn't already chosen
         additional_word = random.choice(remaining_words)
+        query = chosen_words + [additional_word]
+        syn = si.find_synonym_in_list(query)
         # Combine the chosen words into a single string
-        result_string = ' '.join(chosen_words + [additional_word])
+        result_string = ' '.join(query + ['<EOS>'] + [syn])
         return result_string
 
     def make_inputs(num_inputs, seed):

@@ -15,8 +15,8 @@ import corpus
 
 
 # global singleton
-CORPUS = corpus.Corpus(corpus.Statquest_inputs.token_to_id,
-                       corpus.Statquest_inputs.input_strings)
+# CORPUS = corpus.Corpus(token_to_id=corpus.Statquest_inputs.token_to_id,
+#                        input_strings=corpus.Statquest_inputs.input_strings)
 
 
 class BasicTransformerParams():
@@ -583,17 +583,17 @@ class DecoderOnlyTransformer(nn.Module):
         return loss
 
 
-def predict_top(model, model_input, num_top):
+def predict_top(model, model_input, num_top, corp):
     # last row (final token) only
     logits = model(model_input.to(model.btp.device))[-1, :]
     probs = F.softmax(logits, dim=0)
     top_probs, top_indices = torch.topk(probs, num_top)
     for idx, prob in zip(top_indices, top_probs):
-        token = CORPUS.id_to_token[idx.item()]
+        token = corp.id_to_token[idx.item()]
         print(f'{token}: {prob:.2f}')
 
 
-def predict(model, model_input, max_len):
+def predict(model, model_input, max_len, corp):
     input_length = model_input.size(dim=0)
 
     # get predictions (logits) from the model
@@ -611,7 +611,7 @@ def predict(model, model_input, max_len):
 
     for i in range(input_length, max_len):
         # if the prediction is <EOS>, then we are done
-        if (predicted_id == CORPUS.token_to_id["<EOS>"]):
+        if (predicted_id == corp.token_to_id["<EOS>"]):
             break
 
         model_input = torch.cat((model_input, predicted_id))
@@ -620,7 +620,7 @@ def predict(model, model_input, max_len):
         predicted_id = torch.tensor([torch.argmax(predictions[-1, :])])
         predicted_ids = torch.cat((predicted_ids, predicted_id))
 
-    return [CORPUS.id_to_token[id.item()] for id in predicted_ids]
+    return [corp.id_to_token[id.item()] for id in predicted_ids]
 
 
 def compare_model_params(models):
@@ -724,15 +724,15 @@ def do_epochs(model, optimizer, dataloader):
     return avg_loss
 
 
-def create_model(btp: BasicTransformerParams):
+def create_model(btp: BasicTransformerParams, corp: corpus.Corpus):
     torch.manual_seed(btp.seed)
     print(f'torch.manual_seed: {btp.seed}')
 
-    model = DecoderOnlyTransformer(btp, num_tokens=len(CORPUS.token_to_id), )
+    model = DecoderOnlyTransformer(btp, num_tokens=len(corp.token_to_id), )
     model.to(btp.device)
     model.train()
     optimizer = Adam(model.parameters(), lr=btp.learning_rate)
-    dataloader = DataLoader(CORPUS.dataset, batch_size=btp.batch_size)
+    dataloader = DataLoader(corp.dataset, batch_size=btp.batch_size)
     return model, optimizer, dataloader
 
 
@@ -755,7 +755,8 @@ def find_val(tensor, value):
         return -1
 
 
-def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
+def count_errors(model, dataloader, print_errs=False, response_errs_only=False, corp=None):
+    assert corp is not None
     num_errs = 0
     num_response_errs = 0
     for batch, (X, y) in enumerate(dataloader):
@@ -774,7 +775,7 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
             for i in range(this_batch_size):
                 mispreds = mispredictions[i]
                 if response_errs_only:
-                    idx = find_val(y[i], CORPUS.token_to_id['<EOS>'])
+                    idx = find_val(y[i], corp.token_to_id['<EOS>'])
                     if idx >= 0:
                         relevant_mispreds = mispreds[idx+1:]
                     else:
@@ -791,9 +792,9 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False):
                         pred_IDs = predicted_ids[i]
                         true_IDs = y[i]
                         print()
-                        print(f'input_IDs: {CORPUS.ids_to_string(input_IDs)}')
-                        print(f'pred_IDs: {CORPUS.ids_to_string(pred_IDs)}')
-                        print(f'true_IDs: {CORPUS.ids_to_string(true_IDs)}')
+                        print(f'input_IDs: {corp.ids_to_string(input_IDs)}')
+                        print(f'pred_IDs: {corp.ids_to_string(pred_IDs)}')
+                        print(f'true_IDs: {corp.ids_to_string(true_IDs)}')
 
     print(f'num_errs: {num_errs}')
     if response_errs_only:
@@ -916,6 +917,10 @@ def main4():
 
     btp = BasicTransformerParams()
 
+    sq = corpus.Statquest_inputs
+    corp = corpus.Corpus(token_to_id=sq.token_to_id,
+                         input_strings=sq.input_strings)
+
     batch_sizes = [5]
     models = []
     optimizers = []
@@ -949,30 +954,47 @@ def main4():
             print(f'\nmodel type {type(model)}, '
                   f'batch size {dataloader.batch_size}')
             for in_str in in_strs:
-                model_input = CORPUS.input_to_tensor(in_str)
-                pred_tokens = predict(model, model_input, btp.max_input_tokens)
+                model_input = corp.input_to_tensor(in_str)
+                pred_tokens = predict(model, model_input,
+                                      btp.max_input_tokens, corp)
                 print(in_str, ' -> ', ' '.join(pred_tokens))
             count_errors(model, dataloader, print_errs=True,
-                         response_errs_only=True)
+                         response_errs_only=True, corp=corp)
 
     with torch.no_grad():
         model = models[0]
         in_str = 'what is apple <EOS>'
         num_top = 3
-        predict_top(model, CORPUS.input_to_tensor(in_str), num_top=num_top)
+        predict_top(model, corp.input_to_tensor(
+            in_str), num_top=num_top, corp=corp)
         attention = model.get_saved_attention()
         token_ids = model.saved_token_IDs
-        tokens = [CORPUS.id_to_token[t.item()] for t in token_ids]
+        tokens = [corp.id_to_token[t.item()] for t in token_ids]
         print(f'attention\n{rounded_tensor_to_str(attention)}')
         print(f'tokens {tokens}')
 
 
-def main():
+def main5():
     btp = BasicTransformerParams()
     btp.d_model = 6
 
     for btp.attn_head_config in ('multi', 'multicompact', ):
         model, optimizer, dataloader = create_model(btp)
+        do_epochs(model, optimizer, dataloader)
+        response_errs = count_errors(
+            model, dataloader, response_errs_only=True)
+        print(f'response_errs: {response_errs}')
+
+
+def main():
+    btp = BasicTransformerParams()
+    sq = corpus.Statquest_inputs
+    corp = corpus.Corpus(token_to_id=sq.token_to_id,
+                         input_strings=sq.input_strings)
+    btp.d_model = 6
+
+    for btp.attn_head_config in ('multi', 'multicompact', ):
+        model, optimizer, dataloader = create_model(btp, corp)
         do_epochs(model, optimizer, dataloader)
         response_errs = count_errors(
             model, dataloader, response_errs_only=True)
