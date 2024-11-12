@@ -1,7 +1,31 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
+import matplotlib.pyplot as plt
+from scipy import stats
+from sklearn.metrics.pairwise import cosine_distances
 import basic_transformer as bt
 import corpus
+
+
+# written by cloab AI
+def cosine_distance_matrix(embedding_module):
+    """
+    Calculates the cosine distance matrix between all embeddings in a PyTorch Embedding module.
+
+    Args:
+      embedding_module: A PyTorch nn.Embedding module.
+
+    Returns:
+      A NumPy array representing the cosine distance matrix.
+    """
+
+    # Get all embeddings from the module
+    embeddings = embedding_module.weight.detach().cpu().numpy()
+
+    # Calculate cosine distances between all pairs of embeddings
+    distance_matrix = cosine_distances(embeddings)
+
+    return distance_matrix
 
 
 def learn_syns_fixed_order():
@@ -151,6 +175,14 @@ def investigate_syn_model():
     response_err_vals.append(response_errs)
     print(f'response_err_vals: {response_err_vals}')
 
+    print_some_predictions(corp, model)
+
+    # cosines = cosine_distance_matrix(model.we)
+    # print(f'cosine dists:\n {cosines}')
+    return model, corp, si
+
+
+def print_some_predictions(corp: corpus.Corpus, model: bt.DecoderOnlyTransformer):
     dloader_batch1 = DataLoader(corp.dataset, batch_size=1)
     num_to_print = 15
     for instance, (X, y) in enumerate(dloader_batch1):
@@ -163,8 +195,53 @@ def investigate_syn_model():
               f'{corp.ids_to_string(predicted_ids.squeeze())}')
 
 
+def analyze_cosine_distances(model: bt.DecoderOnlyTransformer, corp: corpus.Corpus, si: corpus.Synonym_inputs):
+    cosines = cosine_distance_matrix(model.we)
+    for group in si.syn_lists:
+        for i, word1 in enumerate(group):
+            for word2 in group[i+1:]:
+                assert si.are_synonyms(word1, word2)
+                dist = cosines[corp.token_to_id[word1],
+                               corp.token_to_id[word2]]
+                print(word1, word2, dist)
+        print()
+    intra_tot, num_intra = 0.0, 0
+    inter_tot, num_inter = 0.0, 0
+    intra_vals = []
+    inter_vals = []
+    for i, word1 in enumerate(si.all_words_list):
+        for word2 in si.all_words_list[i+1:]:
+            id1 = corp.token_to_id[word1]
+            id2 = corp.token_to_id[word2]
+            if si.are_synonyms(word1, word2):
+                num_intra += 1
+                intra_tot += cosines[id1, id2]
+                intra_vals.append(cosines[id1, id2])
+            else:
+                num_inter += 1
+                inter_tot += cosines[id1, id2]
+                inter_vals.append(cosines[id1, id2])
+    intra_avg = intra_tot / num_intra
+    inter_avg = inter_tot / num_inter
+    print(f'intra_avg {intra_avg}, num_intra {num_intra}')
+    print(f'inter_avg {inter_avg}, num_inter {num_inter}')
+    t_statistic, p_value = stats.ttest_ind(intra_vals, inter_vals)
+    print(f'p-value of T test for difference of two means: {p_value}')
+
+    plt.plot(intra_vals, 'o', label='intra_vals')
+    plt.plot(inter_vals, 'x', label='inter_vals')
+
+    plt.xlabel('Index')
+    plt.ylabel('Value')
+    plt.title('Visualization of synonym cosine distances')
+    plt.legend()
+
+    plt.show()
+
+
 def main():
-    investigate_syn_model()
+    model, corp, si = investigate_syn_model()
+    analyze_cosine_distances(model, corp, si)
     # create_and_save_syn_model()
 
 
