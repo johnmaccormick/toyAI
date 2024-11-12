@@ -121,21 +121,23 @@ class Statquest_inputs:
 
 
 class Synonym_inputs:
-    def __init__(self, seed):
-        self.num_syn_lists = 2
-        self.fixed_order = True
+    def __init__(self, seed, num_syn_lists, fixed_order):
+        self.num_syn_lists = num_syn_lists
+        self.fixed_order = fixed_order
         self.rng = random.Random(seed)
 
         self.syn_lists = [
-            frozenset(["happy", "joyful", "content"]),
-            frozenset(["fast", "quick", "speedy"]),
-            frozenset(["smart", "intelligent", "clever"])
+            ["happy", "joyful", "content"],
+            ["fast", "quick", "speedy"],
+            ["smart", "intelligent", "clever"]
         ]
         self.syn_lists = self.syn_lists[:self.num_syn_lists]
+        self.syn_sets = [frozenset(l) for l in self.syn_lists]
 
         # Flatten syn_list to get all words in a single list
         self.all_words = frozenset(
             [word for group in self.syn_lists for word in group])
+        self.all_words_list = sorted(list(self.all_words))
 
         self.syn_indexes = dict()  # str->int
         for i, this_list in enumerate(self.syn_lists):
@@ -148,7 +150,7 @@ class Synonym_inputs:
 
     def find_synonym_in_list(self, words: list[str]):
         target = words[-1]
-        syns = self.syn_lists[self.syn_indexes[target]]
+        syns = self.syn_sets[self.syn_indexes[target]]
         for word in words[:-1]:
             if word in syns:
                 return word
@@ -157,25 +159,25 @@ class Synonym_inputs:
     def are_synonyms(self, word1, word2):
         return self.syn_indexes[word1] == self.syn_indexes[word2]
 
-    def make_choice(self, vals):
-        # We sort the list so that,
-        # for a given rng state, the choice is deterministic.
-        # If the param vals is something like a set or frozen set,
-        # the order in which it is converted to a list seems to be
-        # nondeterministic.
-        return self.rng.choice(sorted(list(vals)))
+    # def make_choice(self, vals):
+    #     # We sort the list so that,
+    #     # for a given rng state, the choice is deterministic.
+    #     # If the param vals is something like a set or frozen set,
+    #     # the order in which it is converted to a list seems to be
+    #     # nondeterministic.
+    #     return self.rng.choice(sorted(list(vals)))
 
     def make_input(self):
         # Randomly choose one word from each inner list
-        chosen_words = [self.make_choice(group)
+        chosen_words = [self.rng.choice(group)
                         for group in self.syn_lists]
         if not self.fixed_order:
             self.rng.shuffle(chosen_words)
         # Filter out words already chosen
         remaining_words = [
-            word for word in self.all_words if word not in chosen_words]
+            word for word in self.all_words_list if word not in chosen_words]
         # Choose one additional word that wasn't already chosen
-        additional_word = self.make_choice(remaining_words)
+        additional_word = self.rng.choice(remaining_words)
         query = chosen_words + [additional_word]
         syn = self.find_synonym_in_list(query)
         # Combine the chosen words into a single string
@@ -195,7 +197,9 @@ class Synonym_inputs:
 
 def main():
     seed = 54545
-    si = Synonym_inputs(seed)
+    num_syn_lists = 2
+    fixed_order = True
+    si = Synonym_inputs(seed, num_syn_lists, fixed_order)
     inputs, labels = si.make_inputs(num_inputs=4)
     print([x for x in zip(inputs, labels)])
     # for input, label in zip(inputs, labels):

@@ -44,8 +44,9 @@ class TestCorpus(unittest.TestCase):
         self.assertEqual(c.vocab_size, 6)
 
     def test_Synonym_inputs(self):
-        si = corpus.Synonym_inputs
-        inputs, labels = si.make_inputs(num_inputs=4, seed=54545)
+        si = corpus.Synonym_inputs(
+            seed=54545, num_syn_lists=2, fixed_order=True)
+        inputs, labels = si.make_inputs(num_inputs=4)
         for input, label in zip(inputs, labels):
             words = input.split()
             self.assertIn(label, words[:-1])
