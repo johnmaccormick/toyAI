@@ -175,24 +175,11 @@ def investigate_syn_model():
     response_err_vals.append(response_errs)
     print(f'response_err_vals: {response_err_vals}')
 
-    print_some_predictions(corp, model)
+    bt.print_some_predictions(corp, model)
 
     # cosines = cosine_distance_matrix(model.we)
     # print(f'cosine dists:\n {cosines}')
     return model, corp, si
-
-
-def print_some_predictions(corp: corpus.Corpus, model: bt.DecoderOnlyTransformer):
-    dloader_batch1 = DataLoader(corp.dataset, batch_size=1)
-    num_to_print = 15
-    for instance, (X, y) in enumerate(dloader_batch1):
-        if instance >= num_to_print:
-            break
-        y_pred = model(X.to(model.btp.device))
-        predicted_ids = torch.argmax(y_pred, dim=-1)
-        print(f'{instance} : ' +
-              f'{corp.ids_to_string(X.squeeze())} --> ' +
-              f'{corp.ids_to_string(predicted_ids.squeeze())}')
 
 
 def analyze_cosine_distances(model: bt.DecoderOnlyTransformer, corp: corpus.Corpus, si: corpus.Synonym_inputs):
@@ -241,7 +228,7 @@ def analyze_cosine_distances(model: bt.DecoderOnlyTransformer, corp: corpus.Corp
 
 def main():
     model, corp, si = investigate_syn_model()
-    analyze_cosine_distances(model, corp, si)
+    # analyze_cosine_distances(model, corp, si)
     # create_and_save_syn_model()
 
 

@@ -2,7 +2,6 @@ import time
 import numpy as np
 
 from torch.utils.data import Dataset, DataLoader
-from torch.optim import Adam
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
@@ -70,6 +69,14 @@ class BasicTransformerParams():
         '''Number of nodes in the middle part of the two-layer FFN (if used)'''
         self.d_ffn = 20
 
+        '''Use a fixed trivial one-hot embedding of each token'''
+        self.use_fixed_embedding = False
+
+        '''When calculating loss, use only the final token in the input. 
+        This makes more sense for tasks where we are trying to give a one-word 
+        response to a query without building a model of the language of the query itself.'''
+        self.only_final_input_loss = False
+
         '''Size of minibatches when performing learning'''
         self.batch_size = 5
 
@@ -92,7 +99,7 @@ class BasicTransformerParams():
         print(f"Using device: {self.device}")
 
 
-def prepend_singleton_dims(tensor, target_dims):
+def prepend_singleton_dims(tensor: torch.Tensor, target_dims: int) -> torch.Tensor:
     # Written by Colab AI
     """Prepends singleton dimensions to a tensor until it has exactly target_dims dimensions.
 
@@ -182,7 +189,10 @@ class PositionEncoding(nn.Module):
         div_term = 1/torch.tensor(10000.0)**(embedding_index / d_model)
 
         pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
+        if d_model % 2 == 0:
+            pe[:, 1::2] = torch.cos(position * div_term)
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term[:-1])
 
         self.register_buffer('pe', pe)
 
@@ -502,6 +512,13 @@ def compare_attn_outputs(attn_output: torch.Tensor, attn_output2: torch.Tensor):
         #     print('SAME attns')
 
 
+def make_mask(num_inputs, device):
+    mask = torch.tril(torch.ones(
+        (num_inputs, num_inputs), device=device))
+    mask = mask == 0
+    return mask
+
+
 class DecoderOnlyTransformer(nn.Module):
     # class DecoderOnlyTransformer(L.LightningModule):
 
@@ -518,7 +535,14 @@ class DecoderOnlyTransformer(nn.Module):
         # token embedding
         self.we = nn.Embedding(num_embeddings=num_tokens,
                                embedding_dim=btp.d_model)
-        # print(f'self.we.weight.data:\n{self.we.weight.data}')
+        if btp.use_fixed_embedding:
+            assert num_tokens == btp.d_model, \
+                'When using a fixed embedding, the embedding dimension must be the same as the vocabulary size.'
+            for param in self.we.parameters():
+                param.requires_grad = False
+            with torch.no_grad():
+                self.we.weight.copy_(torch.eye(btp.d_model))
+        print(f'self.we.weight.data:\n{self.we.weight.data}')
 
         # position encoding
         self.pe = PositionEncoding(d_model=btp.d_model,
@@ -558,9 +582,7 @@ class DecoderOnlyTransformer(nn.Module):
         self.dim_info.check_encoding_shape(position_encoded)
 
         num_inputs = token_ids.shape[1]
-        mask = torch.tril(torch.ones(
-            (num_inputs, num_inputs), device=self.btp.device))
-        mask = mask == 0
+        mask = make_mask(num_inputs, self.btp.device)
 
         attn_output = self.attn_layer(position_encoded, mask)
         self.dim_info.check_encoding_shape(attn_output)
@@ -569,16 +591,16 @@ class DecoderOnlyTransformer(nn.Module):
 
         return tok_class_output
 
-    def get_saved_attention(self):
-        return self.self_attention.saved_attention
-
-    def configure_optimizers(self):
-        return Adam(self.parameters(), lr=self.btp.learning_rate)
-
-    def training_step(self, batch, batch_idx):
-        input_tokens, labels = batch  # collect input
-        output = self.forward(input_tokens[0])
-        loss = self.loss(output, labels[0])
+    def calc_loss(self, y_pred: torch.Tensor, y_true: torch.Tensor):
+        y_true = y_true.to(self.btp.device)
+        # batch, input_tok, logits -- i.e. batchSize x numInputs x vocabSize
+        assert y_pred.ndim == 3
+        assert y_true.ndim == 2  # batch, tok_IDs -- i.e. batchSize x numInputs
+        assert y_pred.shape[:2] == y_true.shape
+        if not self.btp.only_final_input_loss:
+            loss = self.loss(y_pred[:, -1, :], y_true[:, -1])
+        else:
+            loss = self.loss(y_pred, y_true)
 
         return loss
 
@@ -638,7 +660,7 @@ def compare_model_params(models):
         print(name1, 'diff\n', diff)
 
 
-def evaluate_gradient(model, x, y):
+def evaluate_gradient(model: DecoderOnlyTransformer, x: torch.Tensor, y: torch.Tensor):
     model.train()
     model.zero_grad()
     y_pred = model(x.to(model.btp.device))  # Perform a forward pass
@@ -647,7 +669,7 @@ def evaluate_gradient(model, x, y):
     loss.backward()
 
 
-def calc_pred_and_loss(model: nn.Module, X: torch.Tensor, y: torch.Tensor):
+def calc_pred_and_loss(model: DecoderOnlyTransformer, X: torch.Tensor, y: torch.Tensor):
     y_pred = model(X.to(model.btp.device))
 
     # Ensure y is 2d and y_pred 3d
@@ -668,7 +690,9 @@ def calc_pred_and_loss(model: nn.Module, X: torch.Tensor, y: torch.Tensor):
     return y_pred, loss
 
 
-def do_training_step(model: torch.nn.Module, optimizer, X: torch.Tensor, y: torch.Tensor, print_loss=False):
+def do_training_step(model: DecoderOnlyTransformer,
+                     optimizer: torch.optim.Optimizer,
+                     X: torch.Tensor, y: torch.Tensor, print_loss=False):
     # X could be a batch or a single instance.
     # If it's a single instance, convert it to a batch of size 1.
     # This guarantees the input will have a known dimensionality.
@@ -731,7 +755,7 @@ def create_model(btp: BasicTransformerParams, corp: corpus.Corpus):
     model = DecoderOnlyTransformer(btp, num_tokens=len(corp.token_to_id), )
     model.to(btp.device)
     model.train()
-    optimizer = Adam(model.parameters(), lr=btp.learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=btp.learning_rate)
     dataloader = DataLoader(corp.dataset, batch_size=btp.batch_size)
     return model, optimizer, dataloader
 
@@ -848,6 +872,18 @@ def copy_attn_multi_to_compact(btp: BasicTransformerParams, multi_model, compact
             c.W_k.weight[h*d_qk:(h+1)*d_qk, :] = m[h].W_k.weight
             c.W_v.weight[h*d_vo:(h+1)*d_vo, :] = m[h].W_v.weight
             c.W_o.weight[:, h*d_vo:(h+1)*d_vo] = m[h].W_o.weight
+
+
+def print_some_predictions(corp: corpus.Corpus, model: DecoderOnlyTransformer, num_to_print=15):
+    dloader_batch1 = DataLoader(corp.dataset, batch_size=1)
+    for instance, (X, y) in enumerate(dloader_batch1):
+        if instance >= num_to_print:
+            break
+        y_pred = model(X.to(model.btp.device))
+        predicted_ids = torch.argmax(y_pred, dim=-1)
+        print(f'{instance} : ' +
+              f'{corp.ids_to_string(X.squeeze())} --> ' +
+              f'{corp.ids_to_string(predicted_ids.squeeze())}')
 
 
 def main1():

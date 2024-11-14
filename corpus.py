@@ -195,6 +195,20 @@ class Synonym_inputs:
         return inputs, labels
 
 
+class Alphabet_inputs:
+    token_to_id = {'a': 0,
+                   'b': 1,
+                   'c': 2,
+                   '<EOS>': 3,
+                   '<PAD>': 4,
+                   }
+
+    input_strings = ['a b <EOS> c',
+                     'b c <EOS> a',
+                     'c a <EOS> b',
+                     ]
+
+
 def main():
     seed = 54545
     num_syn_lists = 2

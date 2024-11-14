@@ -10,6 +10,11 @@ class TestCorpus(unittest.TestCase):
                           corpus.Statquest_inputs.input_strings)
         self.assertEqual(c.vocab_size, 11)
 
+    def test_Alphabet_inputs(self):
+        c = corpus.Corpus(corpus.Alphabet_inputs.token_to_id,
+                          corpus.Alphabet_inputs.input_strings)
+        self.assertEqual(c.vocab_size, 5)
+
     def test_token_dict_from_tokens(self):
         tokens = ['a', 'b', 'c', 'a']
         token_to_id = corpus.Corpus.token_dict_from_tokens(tokens)
