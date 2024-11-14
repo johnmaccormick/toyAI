@@ -1,6 +1,7 @@
+import random
 from torch.utils.data import Dataset
 import torch
-import random
+import jm_util
 
 
 class Data(Dataset):
@@ -35,6 +36,7 @@ class Corpus:
         self.vocab_size = len(self.token_to_id)
         self.id_to_token = dict(map(reversed, self.token_to_id.items()))
         self.pad_idx = self.token_to_id['<PAD>']
+        self.eos_idx = self.token_to_id['<EOS>']
         self.inputs = [self.input_to_tensor(input_string)
                        for input_string in self.input_strings]
         advanced_inputs = [self.advance_input(
@@ -92,6 +94,12 @@ class Corpus:
 
     def token_dict_from_inputs(input_strings: list[str]) -> dict[str, int]:
         return Corpus.token_dict_from_string(' '.join(input_strings))
+
+    def truncate_at_EOS(self, tokens: torch.Tensor):
+        assert tokens.ndim == 1
+        idx = jm_util.find_val(tokens, self.eos_idx)
+        assert idx != -1
+        return tokens[:idx+1], idx
 
 
 class Statquest_inputs:

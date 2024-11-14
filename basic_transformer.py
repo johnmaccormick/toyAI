@@ -542,7 +542,7 @@ class DecoderOnlyTransformer(nn.Module):
                 param.requires_grad = False
             with torch.no_grad():
                 self.we.weight.copy_(torch.eye(btp.d_model))
-        print(f'self.we.weight.data:\n{self.we.weight.data}')
+        # print(f'self.we.weight.data:\n{self.we.weight.data}')
 
         # position encoding
         self.pe = PositionEncoding(d_model=btp.d_model,
@@ -593,14 +593,14 @@ class DecoderOnlyTransformer(nn.Module):
 
     def calc_loss(self, y_pred: torch.Tensor, y_true: torch.Tensor):
         y_true = y_true.to(self.btp.device)
-        # batch, input_tok, logits -- i.e. batchSize x numInputs x vocabSize
+        # y_pred should be batch, logits, input_tok -- i.e. batchSize x vocabSize x numInputs
         assert y_pred.ndim == 3
         assert y_true.ndim == 2  # batch, tok_IDs -- i.e. batchSize x numInputs
-        assert y_pred.shape[:2] == y_true.shape
+        assert (y_pred.shape[0], y_pred.shape[2]) == y_true.shape
         if not self.btp.only_final_input_loss:
-            loss = self.loss(y_pred[:, -1, :], y_true[:, -1])
-        else:
             loss = self.loss(y_pred, y_true)
+        else:
+            loss = self.loss(y_pred[:, :, -1], y_true[:, -1])
 
         return loss
 
@@ -613,6 +613,19 @@ def predict_top(model, model_input, num_top, corp):
     for idx, prob in zip(top_indices, top_probs):
         token = corp.id_to_token[idx.item()]
         print(f'{token}: {prob:.2f}')
+
+
+def predict_one_tok_from_str(model: nn.Module, corp: corpus.Corpus, in_string: str):
+    tok_IDs = corp.input_to_tensor(
+        in_string).unsqueeze(0)  # shape 1 x num_inputs
+    num_inputs = tok_IDs.shape[1]
+    assert tok_IDs.shape == (1, num_inputs)
+    # shape 1 x num_inputs x vocabsize
+    logits = model(tok_IDs.to(model.btp.device))
+    assert logits.shape == (1, num_inputs, corp.vocab_size)
+    predicted_id = torch.argmax(logits[0, -1, :]).item()
+    predicted_word = corp.id_to_token[predicted_id]
+    return predicted_word
 
 
 def predict(model, model_input, max_len, corp):
@@ -664,7 +677,7 @@ def evaluate_gradient(model: DecoderOnlyTransformer, x: torch.Tensor, y: torch.T
     model.train()
     model.zero_grad()
     y_pred = model(x.to(model.btp.device))  # Perform a forward pass
-    loss = model.loss(y_pred, y.to(model.btp.device))
+    loss = model.calc_loss(y_pred, y)
     # print(f'loss {loss}')
     loss.backward()
 
@@ -677,6 +690,7 @@ def calc_pred_and_loss(model: DecoderOnlyTransformer, X: torch.Tensor, y: torch.
     y_pred = prepend_singleton_dims(y_pred, 3)
     if y_pred.ndim == 4:
         y_pred = y_pred.squeeze(0)
+
     # See my diary entry for 10/23/2024 for detailed explanation of this transpose.
     # Basically, the first dimension of y_pred should be the batches (which is correct already),
     # but the second should be the different possible classes
@@ -686,7 +700,7 @@ def calc_pred_and_loss(model: DecoderOnlyTransformer, X: torch.Tensor, y: torch.
     # e.g. batch size 2, vocab size 10, input len 5 gives y_pred
     # with shape 2,5,10 but gets transposed to 2,10,5.
     y_pred.transpose_(dim0=-2, dim1=-1)
-    loss = model.loss(y_pred, y.to(model.btp.device))
+    loss = model.calc_loss(y_pred, y)
     return y_pred, loss
 
 
@@ -760,25 +774,6 @@ def create_model(btp: BasicTransformerParams, corp: corpus.Corpus):
     return model, optimizer, dataloader
 
 
-def find_val(tensor, value):
-    """Finds the index of the first element equal to a given value in a 1D PyTorch tensor.
-       -- gen my Colab AI
-
-    Args:
-      tensor: The 1D PyTorch tensor.
-      value: The value to search for.
-
-    Returns:
-      The index of the first element equal to the given value, or -1 if the value
-      is not found.
-    """
-    indices = (tensor == value).nonzero(as_tuple=True)[0]
-    if len(indices) > 0:
-        return indices[0].item()
-    else:
-        return -1
-
-
 def count_errors(model, dataloader, print_errs=False, response_errs_only=False, corp=None):
     assert corp is not None
     num_errs = 0
@@ -824,6 +819,48 @@ def count_errors(model, dataloader, print_errs=False, response_errs_only=False, 
     if response_errs_only:
         print(f'num_response_errs: {num_response_errs}')
     return num_response_errs if response_errs_only else num_errs
+
+
+def count_last_tok_errors(model, dataloader, corp, print_errs=False):
+    assert isinstance(corp, corpus.Corpus)
+    num_errs = 0
+    for batch, (X, y) in enumerate(dataloader):
+        y_pred = model(X.to(model.btp.device))
+
+        # y_pred is batchsize x numtoks x vocabsize
+        # y is batchsize x numtoks
+        # Restrict to last token:
+        # shape is now batchsize x vocabsize
+        y_pred = y_pred[:, -1, :]
+        y = y[:, -1]  # shape is now (batchsize,)
+
+        predicted_ids = torch.argmax(y_pred, dim=-1)  # shape is (batchsize,)
+
+        assert predicted_ids.ndim == 1
+        assert predicted_ids.shape == y.shape
+        mispredictions = (y - predicted_ids).bool()
+        this_num_errs = torch.count_nonzero(mispredictions).item()
+        num_errs += this_num_errs
+        if this_num_errs > 0:
+            msg = '\nfinal token errors:'
+            printed_msg = False
+            this_batch_size = X.shape[0]
+            for i in range(this_batch_size):
+                mispreds = mispredictions[i]
+                if print_errs:
+                    if not printed_msg:
+                        print(msg)
+                        printed_msg = True
+                    input_IDs = X[i]
+                    pred_ID = predicted_ids[i]
+                    true_ID = y[i]
+                    print()
+                    print(f'inputs: {corp.ids_to_string(input_IDs)}')
+                    print(f'pred tok: {corp.ids_to_string(pred_ID)}')
+                    print(f'true tok: {corp.ids_to_string(true_ID)}')
+
+    print(f'num final token errs: {num_errs}')
+    return num_errs
 
 
 def print_individual_losses(model, dataloader):
@@ -884,6 +921,45 @@ def print_some_predictions(corp: corpus.Corpus, model: DecoderOnlyTransformer, n
         print(f'{instance} : ' +
               f'{corp.ids_to_string(X.squeeze())} --> ' +
               f'{corp.ids_to_string(predicted_ids.squeeze())}')
+
+
+def print_some_query_answers(corp: corpus.Corpus, model: DecoderOnlyTransformer, num_to_print=15):
+    dloader_batch1 = DataLoader(corp.dataset, batch_size=1)
+    for instance, (X, y) in enumerate(dloader_batch1):
+        if instance >= num_to_print:
+            break
+        start_shape = X.shape
+        assert X.ndim == 2
+        assert X.shape[0] == 1
+        num_inputs = X.shape[1]
+        X_trunc, eos_idx = corp.truncate_at_EOS(X.squeeze(0))
+        X_trunc.unsqueeze_(0)
+        assert X_trunc.ndim == 2
+        assert X_trunc.shape[0] == 1
+        new_num_inputs = X_trunc.shape[1]
+        assert new_num_inputs == eos_idx + 1
+
+        y_trunc = y[:, :new_num_inputs]
+
+        # dims are numbatches x numinputs x vocabsize
+        y_pred = model(X_trunc.to(model.btp.device))
+        # dims are now numbatches x vocabsize x numinputs
+        y_pred.transpose_(dim0=-1, dim1=-2)
+
+        loss = model.loss(y_pred, y_trunc)
+
+        y_final = y_trunc[:, -1].squeeze().item()
+        predicted_ids = torch.argmax(y_pred, dim=-2)
+        predicted_id = predicted_ids[0, -1].item()
+        predicted_token = corp.id_to_token[predicted_id]
+        true_token = corp.id_to_token[y_final]
+        pred_logit = y_pred[0, predicted_id, -1]
+        true_logit = y_pred[0, y_final, -1]
+        print(f'{instance} : ' +
+              f'{corp.ids_to_string(X_trunc.squeeze())} --> ' +
+              f'{predicted_token}[logit={pred_logit:.3f}] ' +
+              f'  true: {true_token}[logit={true_logit:.3f}], loss: {loss.item()}')
+        # print(f'y_pred: {y_pred}')
 
 
 def main1():
@@ -1022,7 +1098,7 @@ def main5():
         print(f'response_errs: {response_errs}')
 
 
-def main():
+def main6():
     btp = BasicTransformerParams()
     sq = corpus.Statquest_inputs
     corp = corpus.Corpus(token_to_id=sq.token_to_id,
@@ -1035,6 +1111,24 @@ def main():
         response_errs = count_errors(
             model, dataloader, response_errs_only=True)
         print(f'response_errs: {response_errs}')
+
+
+def main():
+    btp = BasicTransformerParams()
+    sq = corpus.Statquest_inputs
+    corp = corpus.Corpus(token_to_id=sq.token_to_id,
+                         input_strings=sq.input_strings)
+    btp.d_model = 7
+    btp.only_final_input_loss = True
+    btp.batch_size = 1
+    btp.seed = 16161
+    model, optimizer, dataloader = create_model(btp, corp)
+    # do_epochs(model, optimizer, dataloader)
+    # in_str = 'what is apple <EOS>'
+    # pred_word = predict_one_tok_from_str(model, corp, in_str)
+    # print(f'in_str: {in_str}, pred_word: {pred_word}')
+
+    print_some_query_answers(corp, model)
 
 
 if __name__ == "__main__":

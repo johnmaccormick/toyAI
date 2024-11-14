@@ -4,6 +4,25 @@ import os
 import torch
 
 
+def find_val(tensor, value):
+    """Finds the index of the first element equal to a given value in a 1D PyTorch tensor.
+       -- gen my Colab AI
+
+    Args:
+      tensor: The 1D PyTorch tensor.
+      value: The value to search for.
+
+    Returns:
+      The index of the first element equal to the given value, or -1 if the value
+      is not found.
+    """
+    indices = (tensor == value).nonzero(as_tuple=True)[0]
+    if len(indices) > 0:
+        return indices[0].item()
+    else:
+        return -1
+
+
 def delete_directory_contents(directory_path):
     # written by colab AI
     """Deletes the contents of a directory.

@@ -104,6 +104,46 @@ def learn_syns_random_order():
     print(f'response_err_vals: {response_err_vals}')
 
 
+def syn_model_final_only_loss():
+    btp = bt.BasicTransformerParams()
+    btp.num_epochs = 2
+    btp.d_model = 16
+    btp.num_attn_heads = 16
+    btp.attn_head_config = 'multicompact'
+    btp.use_2ffn = True
+    btp.d_qk = btp.d_model
+    btp.d_vo = btp.d_model
+    btp.d_ffn = 32
+
+    btp.use_attn_layers = False
+    btp.batch_size = 10
+    btp.learning_rate = 0.002
+    btp.loss_print_freq = 100
+
+    btp.only_final_input_loss = True
+
+    num_syn_lists = 3
+    num_in_strs = 300
+    fixed_order = False
+
+    si = corpus.Synonym_inputs(seed=btp.seed, num_syn_lists=num_syn_lists,
+                               fixed_order=fixed_order)
+    inputs, labels = si.make_inputs(num_inputs=num_in_strs)
+    corp = corpus.Corpus(input_strings=inputs)
+    print(f'num_in_strs {num_in_strs}, vocab size {corp.vocab_size}')
+    start_seed = 123
+    err_vals = []
+    btp.seed = start_seed
+    model, optimizer, dataloader = bt.create_model(btp, corp)
+    avg_loss = bt.do_epochs(model, optimizer, dataloader)
+    # response_errs = bt.count_errors(
+    #     model, dataloader, response_errs_only=True, corp=corp)
+    errs = bt.count_last_tok_errors(model, dataloader, corp)
+    err_vals.append(errs)
+    print(f'err_vals: {err_vals}')
+    torch.save(model.state_dict(), 'syn-model.pth')
+
+
 def create_and_save_syn_model():
     btp = bt.BasicTransformerParams()
     btp.num_epochs = 200
@@ -169,7 +209,8 @@ def investigate_syn_model():
     response_err_vals = []
     btp.seed = start_seed
     model, optimizer, dataloader = bt.create_model(btp, corp)
-    model.load_state_dict(torch.load('syn-model.pth', weights_only=True))
+    model.load_state_dict(torch.load(
+        'syn-model-11-14-2024.pth', weights_only=True))
     response_errs = bt.count_errors(
         model, dataloader, response_errs_only=True, corp=corp)
     response_err_vals.append(response_errs)
@@ -227,9 +268,10 @@ def analyze_cosine_distances(model: bt.DecoderOnlyTransformer, corp: corpus.Corp
 
 
 def main():
-    model, corp, si = investigate_syn_model()
+    # model, corp, si = investigate_syn_model()
     # analyze_cosine_distances(model, corp, si)
     # create_and_save_syn_model()
+    syn_model_final_only_loss()
 
 
 # torch.save(model.state_dict(), 'syn-model.pth')
