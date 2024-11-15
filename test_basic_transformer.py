@@ -181,6 +181,33 @@ class TestBasicTransformer(unittest.TestCase):
                                 bt.do_training_step(model, optimizer,
                                                     X, y, print_loss=False)
 
+    def test_query_style(self):
+
+        btp = bt.BasicTransformerParams()
+        sq = corpus.Statquest_inputs
+        queries_only = True
+        corp = corpus.Corpus(token_to_id=sq.token_to_id,
+                             input_strings=sq.input_strings,
+                             queries_only=queries_only)
+        btp.d_model = 6
+        btp.use_attn_layers = False
+        btp.d_qk = 4
+        btp.d_vo = 3
+        btp.attn_head_config = 'single'
+        btp.use_2ffn = True
+        btp.d_ffn = 20
+        btp.batch_size = 5
+        btp.num_epochs = 300
+        btp.only_final_input_loss = queries_only
+
+        exp_avg_loss = 3.5562313e-05
+
+        model, optimizer, dataloader = bt.create_model(btp, corp)
+        avg_loss = bt.do_epochs(model, optimizer, dataloader)
+        self.assertAlmostEqual(avg_loss, exp_avg_loss, places=5)
+        last_tok_errs = bt.count_last_tok_errors(model, corp, print_errs=True)
+        self.assertEqual(last_tok_errs, 0)
+
 
 if __name__ == '__main__':
     unittest.main()

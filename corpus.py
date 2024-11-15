@@ -18,12 +18,13 @@ class Data(Dataset):
 
 
 class Corpus:
-    def __init__(self, token_to_id=None, input_strings=None, token_str=None):
+    def __init__(self, token_to_id=None, input_strings=None, token_str=None, queries_only=False):
 
-        self.create_dataset(token_to_id, input_strings, token_str)
+        self.create_dataset(token_to_id, input_strings,
+                            token_str, queries_only)
 
     def create_dataset(self, token_to_id: dict[str, int], input_strings: list[str],
-                       token_str: str):
+                       token_str: str, queries_only):
         assert token_to_id is None or token_str is None
         assert input_strings is not None
         if token_str is not None:
@@ -31,6 +32,7 @@ class Corpus:
         elif token_to_id is None:
             token_to_id = Corpus.token_dict_from_inputs(input_strings)
 
+        self.queries_only = queries_only
         self.token_to_id = token_to_id
         self.input_strings = input_strings
         self.vocab_size = len(self.token_to_id)
@@ -39,13 +41,28 @@ class Corpus:
         self.eos_idx = self.token_to_id['<EOS>']
         self.inputs = [self.input_to_tensor(input_string)
                        for input_string in self.input_strings]
-        advanced_inputs = [self.advance_input(
-            input_str) for input_str in self.input_strings]
-        self.labels = [self.input_to_tensor(advanced_input)
-                       for advanced_input in advanced_inputs]
-        self.add_padding(self.inputs)
-        self.add_padding(self.labels)
+        if not queries_only:
+            advanced_inputs = [self.advance_input(
+                input_str) for input_str in self.input_strings]
+            self.labels = [self.input_to_tensor(advanced_input)
+                           for advanced_input in advanced_inputs]
+            self.add_padding(self.inputs)
+            self.add_padding(self.labels)
+        else:
+            trunc_inputs = []
+            labels = []
+            for input in self.inputs:
+                trunc_input, eos_idx = self.truncate_at_EOS(input)
+                label = input[eos_idx+1].unsqueeze(0)
+                trunc_inputs.append(trunc_input)
+                labels.append(label)
+            self.inputs = trunc_inputs
+            self.labels = labels
+            self.add_padding(self.inputs, on_right=False)
+            self.add_padding(self.labels, on_right=False)
         self.dataset = Data(self.inputs, self.labels)
+        # print('created dataset:')
+        # self.print_dataset()
 
     def input_to_IDs(self, input_str):
         return [self.token_to_id[w] for w in input_str.split()]
@@ -68,14 +85,17 @@ class Corpus:
         tokens = [self.id_to_token[ids[i].item()] for i in range(len(ids))]
         return ' '.join(tokens)
 
-    def add_padding(self, ids_list):
+    def add_padding(self, ids_list, on_right=True):
         # ids_list is list of tensors
         max_len = max(map(len, ids_list))
         for i, ids in enumerate(ids_list):
             pad_len = max_len - len(ids)
             if pad_len > 0:
                 padding = torch.full((pad_len,), self.pad_idx)
-                padded_tensor = torch.cat((ids, padding))
+                if on_right:
+                    padded_tensor = torch.cat((ids, padding))
+                else:
+                    padded_tensor = torch.cat((padding, ids))
                 ids_list[i] = padded_tensor
 
     def token_dict_from_tokens(tokens: list[str]) -> dict[str, int]:
@@ -100,6 +120,12 @@ class Corpus:
         idx = jm_util.find_val(tokens, self.eos_idx)
         assert idx != -1
         return tokens[:idx+1], idx
+
+    def print_dataset(self):
+        for X, y in self.dataset:
+            X_str = self.ids_to_string(X)
+            y_str = self.ids_to_string(y)
+            print(f'{X_str} --> {y_str}')
 
 
 class Statquest_inputs:
