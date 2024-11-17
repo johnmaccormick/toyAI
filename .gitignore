@@ -6,3 +6,4 @@ old/
 temp/
 blat*.txt*
 syn-model.pth
+freq-model.pth

@@ -78,6 +78,9 @@ class BasicTransformerParams():
         response to a query without building a model of the language of the query itself.'''
         self.only_final_input_loss = False
 
+        '''If false, position encoding will not be used.'''
+        self.use_position_encoding = True
+
         '''Size of minibatches when performing learning'''
         self.batch_size = 5
 
@@ -532,6 +535,7 @@ class DecoderOnlyTransformer(nn.Module):
 
         self.vocab_size = num_tokens
         self.max_num_inputs = btp.max_input_tokens
+        assert btp.use_position_encoding, 'Omission of position encoding is not yet implemented'
 
         # token embedding
         self.we = nn.Embedding(num_embeddings=num_tokens,

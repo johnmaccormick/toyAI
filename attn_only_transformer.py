@@ -58,8 +58,6 @@ class MinimalAttnHead(nn.Module):
 
 
 class AttnOnlyTransformer(nn.Module):
-    # class DecoderOnlyTransformer(L.LightningModule):
-
     def __init__(self, btp: bt.BasicTransformerParams, num_tokens):
 
         super().__init__()
@@ -72,9 +70,9 @@ class AttnOnlyTransformer(nn.Module):
 
         assert btp.d_model == self.vocab_size
 
-        # position encoding
-        self.pe = bt.PositionEncoding(d_model=btp.d_model,
-                                      max_len=btp.max_input_tokens)
+        if btp.use_position_encoding:
+            self.pe = bt.PositionEncoding(d_model=btp.d_model,
+                                          max_len=btp.max_input_tokens)
 
         # self.head = bt.AttentionHead(
         #     btp.d_model, btp.d_qk, btp.d_vo, self.dim_info)
@@ -91,17 +89,19 @@ class AttnOnlyTransformer(nn.Module):
         self.dim_info.this_batch_size = token_ids.shape[0]
         self.dim_info.num_inputs = token_ids.shape[1]
 
-        one_hot = nn.functional.one_hot(token_ids, num_classes=self.vocab_size)
+        encoding = nn.functional.one_hot(
+            token_ids, num_classes=self.vocab_size)
 
-        position_encoded = self.pe(one_hot)
-        self.dim_info.check_encoding_shape(position_encoded)
+        if self.btp.use_position_encoding:
+            encoding = self.pe(encoding)
+            self.dim_info.check_encoding_shape(encoding)
 
         num_inputs = token_ids.shape[1]
         mask = torch.tril(torch.ones(
             (num_inputs, num_inputs), device=self.btp.device))
         mask = mask == 0
 
-        attn_output = self.head(position_encoded)
+        attn_output = self.head(encoding)
         self.dim_info.check_encoding_shape(attn_output)
 
         return attn_output
