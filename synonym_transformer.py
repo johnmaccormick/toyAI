@@ -106,30 +106,31 @@ def learn_syns_random_order():
 
 def syn_model_final_only_loss():
     btp = bt.BasicTransformerParams()
-    btp.num_epochs = 2
+    btp.num_epochs = 200
     btp.d_model = 16
-    btp.num_attn_heads = 16
-    btp.attn_head_config = 'multicompact'
-    btp.use_2ffn = True
-    btp.d_qk = btp.d_model
-    btp.d_vo = btp.d_model
-    btp.d_ffn = 32
+    btp.num_attn_heads = 2
+    btp.attn_head_config = 'multicompact'  # 'multicompact'
+    btp.use_2ffn = False
+    btp.d_qk = 8
+    btp.d_vo = 8
+    btp.d_ffn = 16
 
     btp.use_attn_layers = False
     btp.batch_size = 10
     btp.learning_rate = 0.002
-    btp.loss_print_freq = 100
+    btp.loss_print_freq = 10
 
     btp.only_final_input_loss = True
 
     num_syn_lists = 3
-    num_in_strs = 300
+    num_in_strs = 500
     fixed_order = False
+    queries_only = True
 
     si = corpus.Synonym_inputs(seed=btp.seed, num_syn_lists=num_syn_lists,
                                fixed_order=fixed_order)
     inputs, labels = si.make_inputs(num_inputs=num_in_strs)
-    corp = corpus.Corpus(input_strings=inputs)
+    corp = corpus.Corpus(input_strings=inputs, queries_only=queries_only)
     print(f'num_in_strs {num_in_strs}, vocab size {corp.vocab_size}')
     start_seed = 123
     err_vals = []
@@ -138,10 +139,11 @@ def syn_model_final_only_loss():
     avg_loss = bt.do_epochs(model, optimizer, dataloader)
     # response_errs = bt.count_errors(
     #     model, dataloader, response_errs_only=True, corp=corp)
-    errs = bt.count_last_tok_errors(model, dataloader, corp)
+    errs = bt.count_last_tok_errors(model, corp)
     err_vals.append(errs)
     print(f'err_vals: {err_vals}')
-    torch.save(model.state_dict(), 'syn-model.pth')
+    # torch.save(model.state_dict(), 'syn-model.pth')
+    # bt.print_some_query_answers(corp, model)
 
 
 def create_and_save_syn_model():

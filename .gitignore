@@ -5,3 +5,4 @@ lightning_logs/
 old/
 temp/
 blat*.txt*
+syn-model.pth

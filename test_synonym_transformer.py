@@ -139,6 +139,43 @@ class TestSynonymTransformer(unittest.TestCase):
             response_err_vals.append(response_errs)
         print(f'response_err_vals: {response_err_vals}')
 
+    def test_syn_model_final_only_loss(self):
+        btp = bt.BasicTransformerParams()
+        btp.num_epochs = 200
+        btp.d_model = 16
+        btp.num_attn_heads = 2
+        btp.attn_head_config = 'multicompact'
+        btp.use_2ffn = False
+        btp.d_qk = 8
+        btp.d_vo = 8
+        btp.d_ffn = 16
+
+        btp.use_attn_layers = False
+        btp.batch_size = 10
+        btp.learning_rate = 0.002
+        btp.loss_print_freq = 50
+
+        btp.only_final_input_loss = True
+
+        num_syn_lists = 3
+        num_in_strs = 300
+        fixed_order = False
+        queries_only = True
+
+        si = corpus.Synonym_inputs(seed=btp.seed, num_syn_lists=num_syn_lists,
+                                   fixed_order=fixed_order)
+        inputs, labels = si.make_inputs(num_inputs=num_in_strs)
+        corp = corpus.Corpus(input_strings=inputs, queries_only=queries_only)
+        print(f'num_in_strs {num_in_strs}, vocab size {corp.vocab_size}')
+        start_seed = 123
+        btp.seed = start_seed
+        model, optimizer, dataloader = bt.create_model(btp, corp)
+        avg_loss = bt.do_epochs(model, optimizer, dataloader)
+        self.assertAlmostEqual(avg_loss, 0.00023, places=5)
+        errs = bt.count_last_tok_errors(model, corp)
+        print(f'errs: {errs}')
+        self.assertEqual(errs, 0)
+
 
 if __name__ == '__main__':
     unittest.main()
