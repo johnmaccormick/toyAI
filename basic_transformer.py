@@ -32,6 +32,8 @@ class BasicTransformerParams():
         tokens the model can ingest.'''
         self.max_input_tokens = 6
 
+        self.vocab_size = -1
+
         '''Does the transformer use multiple layers of self attention?'''
         self.use_attn_layers = False
 
@@ -526,22 +528,23 @@ def make_mask(num_inputs, device):
 class DecoderOnlyTransformer(nn.Module):
     # class DecoderOnlyTransformer(L.LightningModule):
 
-    def __init__(self, btp: BasicTransformerParams, num_tokens):
+    def __init__(self, btp: BasicTransformerParams):
 
         super().__init__()
 
         self.btp = btp
         self.dim_info = DimInfo(d_model=btp.d_model)
 
-        self.vocab_size = num_tokens
+        assert btp.vocab_size != -1
+
         self.max_num_inputs = btp.max_input_tokens
         assert btp.use_position_encoding, 'Omission of position encoding is not yet implemented'
 
         # token embedding
-        self.we = nn.Embedding(num_embeddings=num_tokens,
+        self.we = nn.Embedding(num_embeddings=btp.vocab_size,
                                embedding_dim=btp.d_model)
         if btp.use_fixed_embedding:
-            assert num_tokens == btp.d_model, \
+            assert btp.vocab_size == btp.d_model, \
                 'When using a fixed embedding, the embedding dimension must be the same as the vocabulary size.'
             for param in self.we.parameters():
                 param.requires_grad = False
@@ -560,7 +563,7 @@ class DecoderOnlyTransformer(nn.Module):
 
         # final FC for token classification (outputs logits)
         self.tok_classifier = nn.Linear(
-            in_features=btp.d_model, out_features=num_tokens)
+            in_features=btp.d_model, out_features=btp.vocab_size)
 
         self.loss = nn.CrossEntropyLoss()
 
@@ -770,12 +773,17 @@ def do_epochs(model, optimizer, dataloader):
     return avg_loss
 
 
-def create_model(btp: BasicTransformerParams, corp: corpus.Corpus):
+def create_model(btp: BasicTransformerParams, corp: corpus.Corpus, model_type=DecoderOnlyTransformer):
     assert btp.only_final_input_loss == corp.queries_only
     torch.manual_seed(btp.seed)
     print(f'torch.manual_seed: {btp.seed}')
-
-    model = DecoderOnlyTransformer(btp, num_tokens=len(corp.token_to_id), )
+    btp.vocab_size = corp.vocab_size
+    model = model_type(btp)
+    # if model_type=='DecoderOnly':
+    #     model = DecoderOnlyTransformer(btp, num_tokens=len(corp.token_to_id))
+    # elif model_type=='AttnOnly':
+    #     pass
+    # model = AttnOnlyTransformer(btp, num_tokens=len(corp.token_to_id))
     model.to(btp.device)
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=btp.learning_rate)

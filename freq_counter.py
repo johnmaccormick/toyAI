@@ -100,8 +100,8 @@ def expt_manual_freq_model():
     btp.max_input_tokens = max_len + 2  # +2 is due to <EOS> and query answer
     btp.use_position_encoding = False
 
-    model, optimizer, dataloader = aot.AttnOnlyTransformer.create_model(
-        btp, corp)
+    model, optimizer, dataloader = bt.create_model(
+        btp, corp, aot.AttnOnlyTransformer)
     assert isinstance(model, aot.AttnOnlyTransformer)
     assert isinstance(model.head, aot.MinimalAttnHead)
     model.head.zero_out_W_bil()

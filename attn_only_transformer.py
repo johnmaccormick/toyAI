@@ -66,18 +66,15 @@ class MinimalAttnHead(nn.Module):
             self.W_bil.weight.data[:, corp.pad_idx] = mask_val
 
 
-class AttnOnlyTransformer(nn.Module):
-    def __init__(self, btp: bt.BasicTransformerParams, num_tokens):
+class AttnOnlyTransformer(nn.Module, ):
+    def __init__(self, btp: bt.BasicTransformerParams):
 
         super().__init__()
 
         self.btp = btp
         self.dim_info = bt.DimInfo(d_model=btp.d_model)
 
-        self.vocab_size = num_tokens
-        self.max_num_inputs = btp.max_input_tokens
-
-        assert btp.d_model == self.vocab_size
+        assert btp.d_model == btp.vocab_size
 
         if btp.use_position_encoding:
             self.pe = bt.PositionEncoding(d_model=btp.d_model,
@@ -99,7 +96,7 @@ class AttnOnlyTransformer(nn.Module):
         self.dim_info.num_inputs = token_ids.shape[1]
 
         encoding = nn.functional.one_hot(
-            token_ids, num_classes=self.vocab_size).float()
+            token_ids, num_classes=self.btp.vocab_size).float()
 
         if self.btp.use_position_encoding:
             encoding = self.pe(encoding)
@@ -115,16 +112,53 @@ class AttnOnlyTransformer(nn.Module):
 
         return attn_output
 
-    def create_model(btp: bt.BasicTransformerParams, corp: corpus.Corpus):
-        torch.manual_seed(btp.seed)
-        print(f'torch.manual_seed: {btp.seed}')
+    # def create_model(btp: bt.BasicTransformerParams, corp: corpus.Corpus):
+    #     torch.manual_seed(btp.seed)
+    #     print(f'torch.manual_seed: {btp.seed}')
 
-        model = AttnOnlyTransformer(btp, num_tokens=len(corp.token_to_id), )
-        model.to(btp.device)
-        model.train()
-        optimizer = torch.optim.Adam(model.parameters(), lr=btp.learning_rate)
-        dataloader = DataLoader(corp.dataset, batch_size=btp.batch_size)
-        return model, optimizer, dataloader
+    #     model = AttnOnlyTransformer(btp, num_tokens=len(corp.token_to_id), )
+    #     model.to(btp.device)
+    #     model.train()
+    #     optimizer = torch.optim.Adam(model.parameters(), lr=btp.learning_rate)
+    #     dataloader = DataLoader(corp.dataset, batch_size=btp.batch_size)
+    #     return model, optimizer, dataloader
+
+
+class AttnAndUnencodeTransformer(nn.Module):
+    def __init__(self, btp: bt.BasicTransformerParams):
+
+        super().__init__()
+
+        assert btp.vocab_size > 0
+        self.btp = btp
+        self.dim_info = bt.DimInfo(d_model=btp.d_model)
+
+        self.attn_only = AttnOnlyTransformer(btp)
+
+        # Should we allow bias? Probably, because it allows prior probabilities
+        #  to be represented. I think. However, my pencil and paper work does
+        #  not have a bias in the unencode module, so for now we do not allow it.
+        self.unencode = nn.Linear(
+            in_features=btp.d_model, out_features=btp.vocab_size, bias=False)
+
+        self.loss = nn.CrossEntropyLoss()
+
+    def forward(self, token_ids):
+
+        assert token_ids.ndim == 2
+        # A batch produced by a DataLoader could be smaller than the specified
+        # batch size, for example when drawing from the last few instances at
+        # the end of the dataset.
+        self.dim_info.this_batch_size = token_ids.shape[0]
+        self.dim_info.num_inputs = token_ids.shape[1]
+
+        attn_encoded = self.attn_only(token_ids)
+        self.dim_info.check_encoding_shape(attn_encoded)
+
+        unencoded = self.unencode(attn_encoded)
+        self.dim_info.check_encoding_shape(unencoded)
+
+        return unencoded
 
 
 def learn_attn_only():
@@ -135,7 +169,26 @@ def learn_attn_only():
     btp.d_model = vocab_size
     btp.d_qk = vocab_size
     btp.d_vo = vocab_size
-    model, optimizer, dataloader = AttnOnlyTransformer.create_model(btp, corp)
+    model, optimizer, dataloader = bt.create_model(
+        btp, corp, AttnOnlyTransformer)
+    avg_loss = bt.do_epochs(model, optimizer, dataloader)
+    response_errs = bt.count_errors(
+        model, dataloader, response_errs_only=True, corp=corp)
+    print(f'avg_loss {avg_loss}, response_errs {response_errs}')
+    bt.print_some_predictions(corp, model)
+    bt.print_params(model)
+
+
+def learn_attnUnencode():
+    corp = alphabet.get_Alphabet_corpus()
+    btp = bt.BasicTransformerParams()
+    btp.batch_size = 1
+    vocab_size = len(corp.id_to_token)
+    btp.d_model = vocab_size
+    btp.d_qk = vocab_size
+    btp.d_vo = vocab_size
+    model, optimizer, dataloader = bt.create_model(
+        btp, corp, AttnAndUnencodeTransformer)
     avg_loss = bt.do_epochs(model, optimizer, dataloader)
     response_errs = bt.count_errors(
         model, dataloader, response_errs_only=True, corp=corp)
@@ -145,7 +198,8 @@ def learn_attn_only():
 
 
 def main():
-    learn_attn_only()
+    # learn_attn_only()
+    learn_attnUnencode()
 
 
 if __name__ == "__main__":
