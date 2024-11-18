@@ -56,6 +56,15 @@ class MinimalAttnHead(nn.Module):
         self.dim_info.check_encoding_shape(attention_outputs)
         return attention_outputs
 
+    def zero_out_W_bil(self):
+        with torch.no_grad():
+            self.W_bil.weight.data = torch.zeros_like(self.W_bil.weight.data)
+
+    def mask_pad_token(self, corp: corpus.Corpus):
+        mask_val = -1e9
+        with torch.no_grad():
+            self.W_bil.weight.data[:, corp.pad_idx] = mask_val
+
 
 class AttnOnlyTransformer(nn.Module):
     def __init__(self, btp: bt.BasicTransformerParams, num_tokens):
@@ -90,16 +99,16 @@ class AttnOnlyTransformer(nn.Module):
         self.dim_info.num_inputs = token_ids.shape[1]
 
         encoding = nn.functional.one_hot(
-            token_ids, num_classes=self.vocab_size)
+            token_ids, num_classes=self.vocab_size).float()
 
         if self.btp.use_position_encoding:
             encoding = self.pe(encoding)
             self.dim_info.check_encoding_shape(encoding)
 
-        num_inputs = token_ids.shape[1]
-        mask = torch.tril(torch.ones(
-            (num_inputs, num_inputs), device=self.btp.device))
-        mask = mask == 0
+        # num_inputs = token_ids.shape[1]
+        # mask = torch.tril(torch.ones(
+        #     (num_inputs, num_inputs), device=self.btp.device))
+        # mask = mask == 0
 
         attn_output = self.head(encoding)
         self.dim_info.check_encoding_shape(attn_output)

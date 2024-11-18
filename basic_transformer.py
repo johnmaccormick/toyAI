@@ -596,21 +596,22 @@ class DecoderOnlyTransformer(nn.Module):
 
         return tok_class_output
 
-    def calc_loss(self, y_pred: torch.Tensor, y_true: torch.Tensor):
-        y_true = y_true.to(self.btp.device)
-        # y_pred should be batch, logits, input_tok -- i.e. batchSize x vocabSize x numInputs
-        assert y_pred.ndim == 3
-        if not self.btp.only_final_input_loss:
-            assert y_true.ndim == 2  # batch, tok_IDs -- i.e. batchSize x numInputs
-            assert (y_pred.shape[0], y_pred.shape[2]) == y_true.shape
-            loss = self.loss(y_pred, y_true)
-        else:
-            assert y_true.ndim == 2  # batch, 1 -- i.e. batchSize x 1
-            this_batch_size = y_pred.shape[0]
-            assert y_true.shape == (this_batch_size, 1)
-            loss = self.loss(y_pred[:, :, -1], y_true[:, 0])
 
-        return loss
+def calc_loss(model, y_pred: torch.Tensor, y_true: torch.Tensor):
+    y_true = y_true.to(model.btp.device)
+    # y_pred should be batch, logits, input_tok -- i.e. batchSize x vocabSize x numInputs
+    assert y_pred.ndim == 3
+    if not model.btp.only_final_input_loss:
+        assert y_true.ndim == 2  # batch, tok_IDs -- i.e. batchSize x numInputs
+        assert (y_pred.shape[0], y_pred.shape[2]) == y_true.shape
+        loss = model.loss(y_pred, y_true)
+    else:
+        assert y_true.ndim == 2  # batch, 1 -- i.e. batchSize x 1
+        this_batch_size = y_pred.shape[0]
+        assert y_true.shape == (this_batch_size, 1)
+        loss = model.loss(y_pred[:, :, -1], y_true[:, 0])
+
+    return loss
 
 
 def predict_top(model, model_input, num_top, corp):
@@ -685,7 +686,7 @@ def evaluate_gradient(model: DecoderOnlyTransformer, x: torch.Tensor, y: torch.T
     model.train()
     model.zero_grad()
     y_pred = model(x.to(model.btp.device))  # Perform a forward pass
-    loss = model.calc_loss(y_pred, y)
+    loss = calc_loss(model, y_pred, y)
     # print(f'loss {loss}')
     loss.backward()
 
@@ -708,7 +709,7 @@ def calc_pred_and_loss(model: DecoderOnlyTransformer, X: torch.Tensor, y: torch.
     # e.g. batch size 2, vocab size 10, input len 5 gives y_pred
     # with shape 2,5,10 but gets transposed to 2,10,5.
     y_pred.transpose_(dim0=-2, dim1=-1)
-    loss = model.calc_loss(y_pred, y)
+    loss = calc_loss(model, y_pred, y)
     return y_pred, loss
 
 

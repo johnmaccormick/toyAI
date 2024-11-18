@@ -1,6 +1,7 @@
 from collections import Counter
 import numpy as np
 import torch
+import attn_only_transformer as aot
 import basic_transformer as bt
 import corpus
 
@@ -31,11 +32,11 @@ class Simple_Freq_inputs:
         return inputs, labels
 
 
-def create_and_save_freq_model():
+def create_and_save_freq_model_11_18_2024a():
     btp = bt.BasicTransformerParams()
-    btp.num_epochs = 1000
+    btp.num_epochs = 1500
     btp.d_model = 16
-    btp.num_attn_heads = 4
+    btp.num_attn_heads = 2
     btp.attn_head_config = 'multicompact'
     btp.use_2ffn = True
     btp.d_qk = btp.d_model
@@ -45,12 +46,12 @@ def create_and_save_freq_model():
 
     btp.use_attn_layers = False
     btp.batch_size = 20
-    btp.learning_rate = 0.0001
+    btp.learning_rate = 0.0002
     btp.loss_print_freq = 50
 
     btp.seed = 12321
 
-    num_in_strs = 300
+    num_in_strs = 500
     min_len = 1
     max_len = 10
 
@@ -69,6 +70,52 @@ def create_and_save_freq_model():
     torch.save(model.state_dict(), 'freq-model.pth')
 
 
+def learn_freq_model(model: aot.AttnOnlyTransformer, optimizer, dataloader):
+    btp = model.btp
+    btp.num_epochs = 200
+    btp.only_final_input_loss = True
+    btp.batch_size = 20
+    btp.learning_rate = 0.0002
+    btp.loss_print_freq = 20
+
+    avg_loss = bt.do_epochs(model, optimizer, dataloader)
+    return avg_loss
+
+
+def expt_manual_freq_model():
+    seed = 23432
+    num_in_strs = 500
+    min_len = 1
+    max_len = 10
+    queries_only = True
+    sf = Simple_Freq_inputs(seed=seed)
+    inputs, labels = sf.make_inputs(num_in_strs, min_len, max_len)
+    corp = corpus.Corpus(input_strings=inputs,
+                         queries_only=queries_only)
+
+    btp = bt.BasicTransformerParams()
+    btp.d_model = corp.vocab_size
+    btp.only_final_input_loss = queries_only
+    btp.seed = seed
+    btp.max_input_tokens = max_len + 2  # +2 is due to <EOS> and query answer
+    btp.use_position_encoding = False
+
+    model, optimizer, dataloader = aot.AttnOnlyTransformer.create_model(
+        btp, corp)
+    assert isinstance(model, aot.AttnOnlyTransformer)
+    assert isinstance(model.head, aot.MinimalAttnHead)
+    model.head.zero_out_W_bil()
+    model.head.mask_pad_token(corp)
+
+    learn_freq_model(model, optimizer, dataloader)
+
+    bt.print_params(model)
+
+    response_errs = bt.count_last_tok_errors(model, corp)
+    print(f'response_errs: {response_errs}')
+    bt.print_some_query_answers(corp, model)
+
+
 def main1():
     sf = Simple_Freq_inputs(345)
     for i in range(1, 20):
@@ -76,7 +123,7 @@ def main1():
 
 
 def main():
-    create_and_save_freq_model()
+    expt_manual_freq_model()
 
 
 # torch.save(model.state_dict(), 'syn-model.pth')
