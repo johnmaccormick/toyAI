@@ -200,8 +200,8 @@ def learn_attnUnembed():
     response_errs = bt.count_errors(
         model, dataloader, response_errs_only=True, corp=corp)
     print(f'avg_loss {avg_loss}, response_errs {response_errs}')
-    bt.print_some_predictions(corp, model)
-    bt.print_params(model)
+    # bt.print_some_predictions(corp, model)
+    # bt.print_params(model)
 
 
 def main():

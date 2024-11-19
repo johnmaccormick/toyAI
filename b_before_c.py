@@ -219,12 +219,21 @@ def eval_string(model: aot.AttnAndUnembedTransformer, corp: corpus.Corpus, in_st
 
 
 def train_from_manual():
-    model, corp = manual_weights()
+    seed = 12121
+    num_in_strs = 1000
+    min_len = 10
+    max_len = min_len
+    model, corp = manual_weights(seed, num_in_strs, min_len, max_len)
     btp = model.btp
     btp.num_epochs = 100
     btp.learning_rate = 0.0002
     btp.loss_print_freq = 1
     btp.batch_size = 20
+
+    avg_loss = bt.do_epochs(model, optimizer, dataloader)
+    response_errs = bt.count_last_tok_errors(model, corp)
+    print(f'response_errs: {response_errs}')
+    bt.print_some_query_answers(corp, model)
 
 
 def main1():

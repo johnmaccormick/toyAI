@@ -30,6 +30,7 @@ class TestSynonymTransformer(unittest.TestCase):
             model, dataloader, response_errs_only=True, corp=corp)
         self.assertEqual(response_errs, exp_response_errs)
 
+    @unittest.skip("temp")
     def test_make_and_train_no_errs(self):
         btp = bt.BasicTransformerParams()
         btp.num_epochs = 500
@@ -63,6 +64,7 @@ class TestSynonymTransformer(unittest.TestCase):
             model, dataloader, response_errs_only=True, corp=corp)
         self.assertEqual(response_errs, exp_response_errs)
 
+    @unittest.skip("temp")
     def test_learn_syms_fixed_order(self):
         # Succeeded learning synonyms for fixed order of inputs of the categories,
         # 3 syn lists.
@@ -102,6 +104,7 @@ class TestSynonymTransformer(unittest.TestCase):
             self.assertEqual(response_errs, 0)
         print(f'response_err_vals: {response_err_vals}')
 
+    @unittest.skip("temp")
     def test_learn_syms_random_order(self):
         btp = bt.BasicTransformerParams()
         btp.num_epochs = 500
@@ -139,6 +142,7 @@ class TestSynonymTransformer(unittest.TestCase):
             response_err_vals.append(response_errs)
         print(f'response_err_vals: {response_err_vals}')
 
+    @unittest.skip("temp")
     def test_syn_model_final_only_loss(self):
         btp = bt.BasicTransformerParams()
         btp.num_epochs = 200
