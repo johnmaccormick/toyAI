@@ -100,12 +100,12 @@ class Corpus:
 
     def token_dict_from_tokens(tokens: list[str]) -> dict[str, int]:
         token_to_id = dict()
-        id = -1
         tokens.extend(['<PAD>', '<EOS>'])
-        for tok in tokens:
-            if tok not in token_to_id:
-                id += 1
-                token_to_id[tok] = id
+        # Change into a set for efficiency, then sort so that token IDs
+        # will be the same even if the input strings are different
+        # (assuming that every token appears at least once in the input strings)
+        for id, tok in enumerate(sorted(list(set(tokens)))):
+            token_to_id[tok] = id
         return token_to_id
 
     def token_dict_from_string(token_str: str) -> dict[str, int]:

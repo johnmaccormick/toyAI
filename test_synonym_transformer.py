@@ -15,8 +15,8 @@ class TestSynonymTransformer(unittest.TestCase):
         num_in_strs = 100
 
         num_syn_lists = 2
-        exp_avg_loss = 1.02341
-        exp_response_errs = 60
+        exp_avg_loss = 1.0384880
+        exp_response_errs = 78
         si = corpus.Synonym_inputs(seed=btp.seed, num_syn_lists=num_syn_lists,
                                    fixed_order=True)
         inputs, labels = si.make_inputs(num_inputs=num_in_strs)
@@ -30,7 +30,6 @@ class TestSynonymTransformer(unittest.TestCase):
             model, dataloader, response_errs_only=True, corp=corp)
         self.assertEqual(response_errs, exp_response_errs)
 
-    @unittest.skip("temp")
     def test_make_and_train_no_errs(self):
         btp = bt.BasicTransformerParams()
         btp.num_epochs = 500
@@ -48,7 +47,7 @@ class TestSynonymTransformer(unittest.TestCase):
 
         num_in_strs = 100
         num_syn_lists = 2
-        exp_avg_loss = 0.50418
+        exp_avg_loss = 0.478841467
         exp_response_errs = 0
 
         si = corpus.Synonym_inputs(seed=btp.seed, num_syn_lists=num_syn_lists,
@@ -64,7 +63,6 @@ class TestSynonymTransformer(unittest.TestCase):
             model, dataloader, response_errs_only=True, corp=corp)
         self.assertEqual(response_errs, exp_response_errs)
 
-    @unittest.skip("temp")
     def test_learn_syms_fixed_order(self):
         # Succeeded learning synonyms for fixed order of inputs of the categories,
         # 3 syn lists.
@@ -142,7 +140,6 @@ class TestSynonymTransformer(unittest.TestCase):
             response_err_vals.append(response_errs)
         print(f'response_err_vals: {response_err_vals}')
 
-    @unittest.skip("temp")
     def test_syn_model_final_only_loss(self):
         btp = bt.BasicTransformerParams()
         btp.num_epochs = 200
@@ -175,7 +172,7 @@ class TestSynonymTransformer(unittest.TestCase):
         btp.seed = start_seed
         model, optimizer, dataloader = bt.create_model(btp, corp)
         avg_loss = bt.do_epochs(model, optimizer, dataloader)
-        self.assertAlmostEqual(avg_loss, 0.00023, places=5)
+        self.assertAlmostEqual(avg_loss, 0.00029216313, places=5)
         errs = bt.count_last_tok_errors(model, corp)
         print(f'errs: {errs}')
         self.assertEqual(errs, 0)

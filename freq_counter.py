@@ -123,7 +123,8 @@ def main1():
 
 
 def main():
-    expt_manual_freq_model()
+    # expt_manual_freq_model()
+    create_and_save_freq_model_11_18_2024a()
 
 
 # torch.save(model.state_dict(), 'syn-model.pth')
