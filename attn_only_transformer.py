@@ -58,7 +58,7 @@ class MinimalAttnHead(nn.Module):
 
     def zero_out_W_bil(self):
         with torch.no_grad():
-            self.W_bil.weight.data = torch.zeros_like(self.W_bil.weight.data)
+            self.W_bil.weight.data.zero_()
 
     def mask_pad_token(self, corp: corpus.Corpus):
         mask_val = -1e9
@@ -80,9 +80,12 @@ class AttnOnlyTransformer(nn.Module, ):
             self.pe = bt.PositionEncoding(d_model=btp.d_model,
                                           max_len=btp.max_input_tokens)
 
-        # self.head = bt.AttentionHead(
-        #     btp.d_model, btp.d_qk, btp.d_vo, self.dim_info)
-        self.head = MinimalAttnHead(btp, self.dim_info)
+        if not btp.use_attn_layers:
+            self.head = MinimalAttnHead(btp, self.dim_info)
+        else:
+            assert btp.num_attn_layers > 0
+            self.heads = nn.ModuleList(
+                [MinimalAttnHead(btp, self.dim_info) for _ in range(btp.num_attn_layers)])
 
         self.loss = nn.CrossEntropyLoss()
 
@@ -107,10 +110,15 @@ class AttnOnlyTransformer(nn.Module, ):
         #     (num_inputs, num_inputs), device=self.btp.device))
         # mask = mask == 0
 
-        attn_output = self.head(encoding)
-        self.dim_info.check_encoding_shape(attn_output)
+        if not self.btp.use_attn_layers:
+            encoding = self.head(encoding)
+        else:
+            for h in self.heads:
+                encoding = h(encoding)
 
-        return attn_output
+        self.dim_info.check_encoding_shape(encoding)
+
+        return encoding
 
     # def create_model(btp: bt.BasicTransformerParams, corp: corpus.Corpus):
     #     torch.manual_seed(btp.seed)
@@ -165,6 +173,7 @@ def learn_attn_only():
     corp = alphabet.get_Alphabet_corpus()
     btp = bt.BasicTransformerParams()
     btp.batch_size = 1
+    btp.num_epochs = 500
     vocab_size = len(corp.id_to_token)
     btp.d_model = vocab_size
     btp.d_qk = vocab_size
@@ -187,6 +196,8 @@ def learn_attnUnencode():
     btp.d_model = vocab_size
     btp.d_qk = vocab_size
     btp.d_vo = vocab_size
+    btp.use_attn_layers = True
+    btp.num_attn_layers = 3
     model, optimizer, dataloader = bt.create_model(
         btp, corp, AttnAndUnencodeTransformer)
     avg_loss = bt.do_epochs(model, optimizer, dataloader)
