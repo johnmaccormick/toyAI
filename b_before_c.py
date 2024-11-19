@@ -36,20 +36,12 @@ class B_before_C_inputs:
         return inputs, labels
 
 
-def create_and_save_b_before_c_model():
-    seed = 23433
-    num_in_strs = 50000
-    min_len = 10
-    max_len = min_len
-    queries_only = True
-    bc = B_before_C_inputs(seed=seed)
-    inputs, labels = bc.make_inputs(num_in_strs, min_len, max_len)
-    corp = corpus.Corpus(input_strings=inputs,
-                         queries_only=queries_only)
-
+def set_params(corp: corpus.Corpus, seed, max_len):
     btp = bt.BasicTransformerParams()
     btp.d_model = corp.vocab_size
-    btp.only_final_input_loss = queries_only
+    btp.d_qk = 3
+
+    btp.only_final_input_loss = True
     btp.seed = seed
     btp.max_input_tokens = max_len + 2  # +2 is due to <EOS> and query answer
     btp.use_position_encoding = False
@@ -57,7 +49,7 @@ def create_and_save_b_before_c_model():
     btp.use_attn_layers = True
     btp.num_attn_layers = 2
 
-    btp.num_epochs = 30
+    btp.num_epochs = 100
     btp.only_final_input_loss = True
 
     btp.batch_size = 20
@@ -65,12 +57,23 @@ def create_and_save_b_before_c_model():
     btp.loss_print_freq = 1
 
     btp.max_input_tokens = max_len + 2  # +2 is due to <EOS> and query answer
+    return btp
+
+
+def create_and_save_b_before_c_model():
+    seed = 23434
+    num_in_strs = 5000
+    min_len = 10
+    max_len = min_len
+    corp = make_corpus(seed, num_in_strs, min_len, max_len)
+
+    btp = set_params(corp=corp, seed=seed, max_len=max_len)
 
     print(f'num_in_strs {num_in_strs}, vocab size {corp.vocab_size}')
     # model, optimizer, dataloader = bt.create_model(btp, corp)
     model, optimizer, dataloader = bt.create_model(
-        btp, corp, aot.AttnAndUnencodeTransformer)
-    assert isinstance(model, aot.AttnAndUnencodeTransformer)
+        btp, corp, aot.AttnAndUnembedTransformer)
+    assert isinstance(model, aot.AttnAndUnembedTransformer)
     avg_loss = bt.do_epochs(model, optimizer, dataloader)
     response_errs = bt.count_last_tok_errors(model, corp)
     print(f'response_errs: {response_errs}')
@@ -78,42 +81,30 @@ def create_and_save_b_before_c_model():
     torch.save(model.state_dict(), 'b-before-c-model.pth')
 
 
+def make_corpus(seed, num_in_strs, min_len, max_len):
+    bc = B_before_C_inputs(seed=seed)
+    inputs, labels = bc.make_inputs(num_in_strs, min_len, max_len)
+    corp = corpus.Corpus(input_strings=inputs,
+                         queries_only=True)
+    return corp
+
+
 def validate_model():
     seed = 12121
     num_in_strs = 1000
     min_len = 10
     max_len = min_len
-    queries_only = True
-    bc = B_before_C_inputs(seed=seed)
-    inputs, labels = bc.make_inputs(num_in_strs, min_len, max_len)
-    corp = corpus.Corpus(input_strings=inputs,
-                         queries_only=queries_only)
-
-    btp = bt.BasicTransformerParams()
-    btp.d_model = corp.vocab_size
-    btp.only_final_input_loss = queries_only
-    btp.seed = seed
-    btp.max_input_tokens = max_len + 2  # +2 is due to <EOS> and query answer
-    btp.use_position_encoding = False
-
-    btp.use_attn_layers = True
-    btp.num_attn_layers = 2
-
-    btp.num_epochs = 5000
-    btp.only_final_input_loss = True
-
-    btp.batch_size = 20
-    btp.learning_rate = 0.0002
-    btp.loss_print_freq = 50
-
-    btp.max_input_tokens = max_len + 2  # +2 is due to <EOS> and query answer
+    corp = make_corpus(seed, num_in_strs, min_len, max_len)
+    btp = set_params(corp=corp, seed=seed, max_len=max_len)
 
     model, optimizer, dataloader = bt.create_model(
-        btp, corp, aot.AttnAndUnencodeTransformer)
-    assert isinstance(model, aot.AttnAndUnencodeTransformer)
+        btp, corp, aot.AttnAndUnembedTransformer)
+    assert isinstance(model, aot.AttnAndUnembedTransformer)
 
+    # model.load_state_dict(torch.load(
+    #     'b-before-c-model-11-19-2024b.pth', weights_only=True))
     model.load_state_dict(torch.load(
-        'b-before-c-model-11-19-2024b.pth', weights_only=True))
+        'b-before-c-model.pth', weights_only=True))
     model.eval()
 
     response_errs = bt.count_last_tok_errors(model, corp)
@@ -166,6 +157,75 @@ def validate_model():
 #     print(f'response_errs: {response_errs}')
 #     bt.print_some_query_answers(corp, model)
 
+def manual_weights(seed, num_in_strs, min_len, max_len):
+
+    corp = make_corpus(seed, num_in_strs, min_len, max_len)
+    btp = set_params(corp=corp, seed=seed, max_len=max_len)
+    btp.d_qk = 2
+    model, optimizer, dataloader = bt.create_model(
+        btp, corp, aot.AttnAndUnembedTransformer)
+    assert isinstance(model, aot.AttnAndUnembedTransformer)
+    model.eval()
+    # bt.print_params(model)
+
+    large_val = 10.0
+    i_b = corp.token_to_id['b']
+    i_c = corp.token_to_id['c']
+    i_E = corp.token_to_id['<EOS>']
+    i_n = corp.token_to_id['n']
+    i_y = corp.token_to_id['y']
+
+    W_q0 = model.attn_only.heads[0].W_q.weight.data
+    W_k0 = model.attn_only.heads[0].W_k.weight.data
+    W_q1 = model.attn_only.heads[1].W_q.weight.data
+    W_k1 = model.attn_only.heads[1].W_k.weight.data
+    U = model.unembed.weight.data
+
+    for T in [W_q0, W_k0, W_q1, W_k1, U]:
+        T.zero_()
+
+    # W_q0[0, i_c] = 1.0
+    # W_k0[0, i_b] = 1.0
+    # W_q1[0, i_E] = 1.0
+    # W_k1[0, i_b] = large_val
+    # W_k1[0, i_E] = 1.0
+
+    # U[i_y, i_b] = 1.0
+    # U[i_n, i_E] = 1.0
+
+    W_q0[0, i_c] = 1.0
+    W_k0[0, i_b] = 1.0
+    W_q0[0, i_b] = 1.0
+    W_k0[0, i_c] = 1.0
+
+    U[i_y, i_b] = large_val
+    U[i_n, i_c] = large_val
+
+    # bt.print_params(model)
+
+    return model, corp
+
+
+def eval_string(model: aot.AttnAndUnembedTransformer, corp: corpus.Corpus, in_str: str):
+    model.eval()
+    token_IDs = torch.tensor(corp.input_to_IDs(in_str)).unsqueeze(0)
+    logits = model(token_IDs)
+    logits_final = logits[0, -1, :]
+    print(f'in_str: {in_str}')
+    print('logits:')
+    for i, logit in enumerate(logits_final):
+        print(f'{corp.id_to_token[i]}: {logit}')
+    return logits_final[corp.token_to_id['y']].item()
+
+
+def train_from_manual():
+    model, corp = manual_weights()
+    btp = model.btp
+    btp.num_epochs = 100
+    btp.learning_rate = 0.0002
+    btp.loss_print_freq = 1
+    btp.batch_size = 20
+
 
 def main1():
     sf = B_before_C_inputs(345)
@@ -178,7 +238,15 @@ def main1():
 
 def main():
     # create_and_save_b_before_c_model()
-    validate_model()
+    # validate_model()
+    torch.set_printoptions(precision=2)
+    seed = 12121
+    num_in_strs = 1000
+    min_len = 10
+    max_len = min_len
+    model, corp = manual_weights(seed, num_in_strs, min_len, max_len)
+    eval_string(model, corp, 'v v v u u u b x x x c x x <EOS>')
+    eval_string(model, corp, 'v v v u u u c x x x b x x <EOS>')
 
 
 # torch.save(model.state_dict(), 'syn-model.pth')

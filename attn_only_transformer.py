@@ -13,45 +13,41 @@ class MinimalAttnHead(nn.Module):
 
         self.btp = btp
         self.dim_info = dim_info
+        self.dim_info.d_qk = btp.d_qk
 
         # There are always 3 dims for input: batch, tokens, embedding.
         # dim 0 is for batch. row is 1, col is 2.
         self.row_dim = 1
         self.col_dim = 2
 
-        # bil for bilinear form
-        self.W_bil = nn.Linear(in_features=btp.d_model,
-                               out_features=btp.d_model, bias=False)
+        self.W_q = nn.Linear(in_features=btp.d_model,
+                             out_features=btp.d_qk, bias=False)
+        self.W_k = nn.Linear(in_features=btp.d_model,
+                             out_features=btp.d_qk, bias=False)
 
     def forward(self, encodings):
 
         self.dim_info.check_encoding_shape(encodings)
+        num_inputs = encodings.shape[1]
 
-        enc_mult_W = self.W_bil(encodings)
-        self.dim_info.check_encoding_shape(enc_mult_W)
-        sims = torch.matmul(encodings, enc_mult_W.transpose(
+        q = self.W_q(encodings)
+        k = self.W_k(encodings)
+        self.dim_info.check_qk_shape(q)
+        self.dim_info.check_qk_shape(k)
+
+        sims = torch.matmul(q, k.transpose(
             dim0=self.row_dim, dim1=self.col_dim))
         self.dim_info.check_attn_shape(sims)
-        scaled_sims = sims / torch.tensor(enc_mult_W.size(self.col_dim)**0.5)
-        # print(f'scaled_sims:\n{scaled_sims}')
 
-        num_inputs = encodings.shape[1]
+        scaled_sims = sims / torch.tensor(k.size(self.col_dim)**0.5)
         mask = bt.make_mask(num_inputs, self.btp.device)
         scaled_sims = scaled_sims.masked_fill(mask=mask, value=-1e9)
-        # print(f'masked scaled_sims:\n{scaled_sims}')
 
-        # We need *row-wise* softmax, because matrix will be *post*-muliplied by v.
-        # The row is the last dim, hence dim=-1.
-        # Note dims are B,n,n where B=batch, n=inputs.
         attention_percents = nn.functional.softmax(scaled_sims, dim=-1)
-        # print(f'attention_percents:\n{attention_percents}')
-        # We can check that the softmax was applied along the correct dimension,
-        # because the mask should cause everything above the leading diagonal to be zero.
-        # So when softmax is applied to the first row, there is only one nonzero element
-        # -- the top left element. Therefore, the top left element should be normalized
-        # to 1.0 (or extremely close to it).
+
         topleft = attention_percents[0, 0, 0].item()
         assert (abs(topleft-1.0) < 1e-5)
+
         attention_outputs = torch.matmul(attention_percents, encodings)
         self.dim_info.check_encoding_shape(attention_outputs)
         return attention_outputs
@@ -66,7 +62,7 @@ class MinimalAttnHead(nn.Module):
             self.W_bil.weight.data[:, corp.pad_idx] = mask_val
 
 
-class AttnOnlyTransformer(nn.Module, ):
+class AttnOnlyTransformer(nn.Module):
     def __init__(self, btp: bt.BasicTransformerParams):
 
         super().__init__()
@@ -132,7 +128,7 @@ class AttnOnlyTransformer(nn.Module, ):
     #     return model, optimizer, dataloader
 
 
-class AttnAndUnencodeTransformer(nn.Module):
+class AttnAndUnembedTransformer(nn.Module):
     def __init__(self, btp: bt.BasicTransformerParams):
 
         super().__init__()
@@ -145,8 +141,8 @@ class AttnAndUnencodeTransformer(nn.Module):
 
         # Should we allow bias? Probably, because it allows prior probabilities
         #  to be represented. I think. However, my pencil and paper work does
-        #  not have a bias in the unencode module, so for now we do not allow it.
-        self.unencode = nn.Linear(
+        #  not have a bias in the unembed module, so for now we do not allow it.
+        self.unembed = nn.Linear(
             in_features=btp.d_model, out_features=btp.vocab_size, bias=False)
 
         self.loss = nn.CrossEntropyLoss()
@@ -163,10 +159,10 @@ class AttnAndUnencodeTransformer(nn.Module):
         attn_encoded = self.attn_only(token_ids)
         self.dim_info.check_encoding_shape(attn_encoded)
 
-        unencoded = self.unencode(attn_encoded)
-        self.dim_info.check_encoding_shape(unencoded)
+        unembedded = self.unembed(attn_encoded)
+        self.dim_info.check_encoding_shape(unembedded)
 
-        return unencoded
+        return unembedded
 
 
 def learn_attn_only():
@@ -188,18 +184,18 @@ def learn_attn_only():
     bt.print_params(model)
 
 
-def learn_attnUnencode():
+def learn_attnUnembed():
     corp = alphabet.get_Alphabet_corpus()
     btp = bt.BasicTransformerParams()
     btp.batch_size = 1
     vocab_size = len(corp.id_to_token)
     btp.d_model = vocab_size
-    btp.d_qk = vocab_size
+    btp.d_qk = 3
     btp.d_vo = vocab_size
     btp.use_attn_layers = True
     btp.num_attn_layers = 3
     model, optimizer, dataloader = bt.create_model(
-        btp, corp, AttnAndUnencodeTransformer)
+        btp, corp, AttnAndUnembedTransformer)
     avg_loss = bt.do_epochs(model, optimizer, dataloader)
     response_errs = bt.count_errors(
         model, dataloader, response_errs_only=True, corp=corp)
@@ -210,7 +206,7 @@ def learn_attnUnencode():
 
 def main():
     # learn_attn_only()
-    learn_attnUnencode()
+    learn_attnUnembed()
 
 
 if __name__ == "__main__":
