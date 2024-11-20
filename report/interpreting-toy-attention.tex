@@ -1,0 +1,38 @@
+\documentclass{article}
+
+\newcommand{\ta}{\mathtt{a}}
+\newcommand{\tb}{\mathtt{b}}
+\newcommand{\tn}{\mathtt{n}}
+\newcommand{\tm}{\mathtt{m}}
+\newcommand{\tx}{\mathtt{x}}
+\newcommand{\ty}{\mathtt{y}}
+\newcommand{\tE}{\mathtt{E}}
+\newcommand{\tP}{\mathtt{P}}
+
+\title{Interpreting attention with toy models}
+\author{John MacCormick}
+\date{\today}
+
+
+\begin{document}
+
+\maketitle
+
+This document attempts to explain some aspects of the attention
+mechanism in transformer neural network models. We assume the reader
+is familiar with conventional definitions and treatments of the
+attention mechanism. Here, we focus on some extremely simplified
+variants of transformer architectures, to explain some elementary
+properties of the attention mechanism that may not be obvious in fully
+featured architectures.
+
+We typically use a very small vocabulary of tokens. As an initial
+example, consider the vocabulary $\{\ta, \tb, \tE, \tP\}$. In this
+vocabulary and in the rest of the document: $\tE$ is the
+end-of-sequence token, denoted \texttt{<EOS>} by many authors; $\tP$
+is the padding token, denoted \texttt{<PAD>} by many authors; letters
+such as $\ta, \tb, \tm, \tn, \tx, \ty$ denote regular tokens, which
+might represent words such as \texttt{apple} or \texttt{banana} in a
+more realistic application.
+
+\end{document}
