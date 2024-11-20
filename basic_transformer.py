@@ -897,7 +897,8 @@ def print_gradients(model: nn.Module):
             print(f"Gradient of {name}:\nNot available")
 
 
-def print_params(model: nn.Module):
+def print_params(model: nn.Module, precision=2):
+    torch.set_printoptions(precision=precision)
     for name, param in model.named_parameters():
         print(f"{name}:\n{param.data}")
 

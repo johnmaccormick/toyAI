@@ -224,13 +224,29 @@ def train_from_manual():
     min_len = 10
     max_len = min_len
     model, corp = manual_weights(seed, num_in_strs, min_len, max_len)
+    bt.print_params(model, precision=2)
     btp = model.btp
-    btp.num_epochs = 100
-    btp.learning_rate = 0.0002
-    btp.loss_print_freq = 1
+    btp.num_epochs = 50
+    btp.learning_rate = 0.0001
+    btp.loss_print_freq = 10
     btp.batch_size = 20
 
+    optimizer = torch.optim.Adam(model.parameters(), lr=btp.learning_rate)
+    dataloader = torch.utils.data.DataLoader(
+        corp.dataset, batch_size=btp.batch_size)
     avg_loss = bt.do_epochs(model, optimizer, dataloader)
+    bt.print_params(model, precision=2)
+    response_errs = bt.count_last_tok_errors(model, corp)
+    print(f'response_errs: {response_errs}')
+    bt.print_some_query_answers(corp, model)
+
+    # Validate on a new corpus
+    seed = 76567
+    num_in_strs = 1000
+    min_len = 2
+    max_len = 20
+    corp = make_corpus(seed, num_in_strs, min_len, max_len)
+    model.eval()
     response_errs = bt.count_last_tok_errors(model, corp)
     print(f'response_errs: {response_errs}')
     bt.print_some_query_answers(corp, model)
@@ -245,7 +261,7 @@ def main1():
         print(input, label)
 
 
-def main():
+def main2():
     # create_and_save_b_before_c_model()
     # validate_model()
     torch.set_printoptions(precision=2)
@@ -256,6 +272,10 @@ def main():
     model, corp = manual_weights(seed, num_in_strs, min_len, max_len)
     eval_string(model, corp, 'v v v u u u b x x x c x x <EOS>')
     eval_string(model, corp, 'v v v u u u c x x x b x x <EOS>')
+
+
+def main():
+    train_from_manual()
 
 
 # torch.save(model.state_dict(), 'syn-model.pth')
