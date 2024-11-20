@@ -1,5 +1,7 @@
 \documentclass{article}
 
+\usepackage{amsmath,amssymb,blkarray}
+
 \newcommand{\ta}{\mathtt{a}}
 \newcommand{\tb}{\mathtt{b}}
 \newcommand{\tn}{\mathtt{n}}
@@ -8,6 +10,8 @@
 \newcommand{\ty}{\mathtt{y}}
 \newcommand{\tE}{\mathtt{E}}
 \newcommand{\tP}{\mathtt{P}}
+\newcommand{\bV}{\mathbf{V}}
+\newcommand{\sR}{\mathbb{R}}
 
 \title{Interpreting attention with toy models}
 \author{John MacCormick}
@@ -27,12 +31,100 @@ properties of the attention mechanism that may not be obvious in fully
 featured architectures.
 
 We typically use a very small vocabulary of tokens. As an initial
-example, consider the vocabulary $\{\ta, \tb, \tE, \tP\}$. In this
+example, consider the vocabulary $\bV=\{\ta, \tb, \tE, \tP\}$. In this
 vocabulary and in the rest of the document: $\tE$ is the
 end-of-sequence token, denoted \texttt{<EOS>} by many authors; $\tP$
 is the padding token, denoted \texttt{<PAD>} by many authors; letters
 such as $\ta, \tb, \tm, \tn, \tx, \ty$ denote regular tokens, which
 might represent words such as \texttt{apple} or \texttt{banana} in a
 more realistic application.
+
+We write $v$ for the size of the vocabulary, i.e.\ $v=|\bV|=4$ for the
+above example. Tokens in a vocabulary are assigned ID numbers starting
+from 1. In our initial example the ID numbers are
+$\ta\to 1, \tb\to 2, \tE\to 3, \tP\to 4.$
+
+The input to a transformer is a sequence of tokens. We use the one-hot
+embedding of tokens in $\sR^v$, so the token with ID number $i$ is
+mapped to a $1 \times v$ row vector whose $i$th coordinate is 1 and
+remaining coordinates are zeroes. For example, token $\tE$ maps to
+$(0,0,1,0)$. We use $n$ to denote the number of tokens in an input
+sequence. A sequence of $n$ tokens maps (i.e. embeds) to a
+$n \times v$ \emph{embedded matrix}, denoted $X$. For example, the
+input $s = \mathtt{baE}$ embeds as
+\begin{displaymath}
+  X = X(s)=
+\begin{pmatrix}
+0 & 1 & 0 & 0 \\
+1 & 0 & 0 & 0 \\
+0 & 0 & 1 & 0 
+\end{pmatrix}.
+\end{displaymath}
+As shown in this equation, we often omit the dependence of $X$ on $s$.
+
+We will often label matrix rows and columns with corresponding
+tokens. For example, the $X$ above can be written with column labels
+in order of token ID and row labels in order of input token, as
+follows:
+\begin{displaymath}
+  X = 
+    \begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{c(cccc)}
+        \tb & 0 & 1 & 0 & 0 \\
+        \ta & 1 & 0 & 0 & 0 \\
+        \tE & 0 & 0 & 1 & 0 \\
+      \end{block}
+    \end{blockarray}
+\end{displaymath}
+
+In our toy system, the amount of attention between ordered pairs of
+tokens is specified by a $v \times v$ \emph{relationship matrix}
+$R$. (Most authors do not define $R$ directly, instead deriving it
+from query and key matrices $W_q, W_k$. We will incorporate query and
+key matrices in our framework below, but the simplest toy model is
+best defined in terms of $R$ directly.)
+% The relationship matrix $R$ has the following properties:
+% \begin{itemize}
+% \item Element $R_{ij}$ conveys the amount of attention paid by token $i$ to token $j$, with higher values implying greater attention.
+% \item Entries of $R$ use units that scale logarithmically:
+%   $R_{ij}=-\infty$ implies zero attention from $i$ to $j$; any finite
+%   value of $R_{ij}$ (including negative or zero) implies nonzero
+%   attention; adding a fixed increment to $R_{ij}$ increases the
+%   implied attention by a multiplicative factor.
+% \end{itemize}
+% The logarithmic units are due to the fact that a softmax function will
+% be applied later, during the attention computation. The softmax
+% function involves exponentiation, which will transform $-\infty$ to 0
+% and any finite value (including negative or zero) to a positive value.
+The relationship matrix $R$ has the following properties:
+\begin{itemize}
+\item Element $R_{ij}$ conveys the amount of attention paid by token $i$ to token $j$, with higher values implying greater attention.
+\item Entries of $R$ are nonnegative.
+\item Rows of $R$ sum to 1, so the total amount of attention paid by a
+  given token to all other token sums to 1.
+\end{itemize}
+Here is an example of a possible relationship matrix for the
+vocabulary $\bV$ given above:
+\begin{displaymath}
+  R = 
+    \begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{c(cccc)}
+        \ta & 0 & 1 & 0 & 0 \\
+        \tb & 0.5 & 0.5 & 0 & 0 \\
+        \tE & 0.25 & 0.25 & 0.25 & 0.25 \\
+        \tP & 0 & 0 & 0 & 1 \\
+      \end{block}
+    \end{blockarray}
+\end{displaymath}
+The pairwise attention of tokens in an input string is defined via
+$R$. Specifically, given input sequence $s$ of length $n$, we first
+calculate the embedded matrix $X\equiv X(s)$, then define the
+$n \times n$ attention matrix $A$ by
+\begin{displaymath}
+  A = A(s) = A(X) = X R\, X^T
+\end{displaymath}
+
 
 \end{document}
