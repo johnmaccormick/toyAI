@@ -100,6 +100,32 @@ class Example1(nn.Module):
         return logits
 
 
+class Example1c(nn.Module):
+    def __init__(self, v, inverse_class_probs=None, init_with_zeros=False):
+        torch.manual_seed(SEED)
+        super().__init__()
+        self.v = v
+        self.example1 = Example1(v, inverse_class_probs, init_with_zeros)
+        self.unembed = nn.Linear(in_features=v, out_features=v, bias=False)
+        self.loss = nn.CrossEntropyLoss(weight=inverse_class_probs)
+
+    def forward(self, token_ids):
+        assert token_ids.ndim == 2
+        self.this_batch_size = token_ids.shape[0]
+        b = self.this_batch_size
+        self.n = token_ids.shape[1]
+        n = self.n
+        v = self.v
+
+        attn_outputs = self.example1(token_ids)
+        assert attn_outputs.shape == (b, v)
+
+        logits = self.unembed(attn_outputs)
+        assert logits.shape == (b, v)
+
+        return logits
+
+
 def add_padding(ids_list, pad_idx, padded_len=None, on_right=True):
     # ids_list is list of tensors
     max_len = max(map(len, ids_list))
@@ -201,14 +227,12 @@ def do_epoch(dataloader, model, optimizer, pad_idx):
 
 
 class Simple_Freq_inputs:
-    def __init__(self, chars, seed, yesno=False, token_to_id=None):
+    def __init__(self, chars, seed, yesno=False):
         self.rng = np.random.default_rng(seed=seed)
         self.chars = chars
         self.num_chars = len(self.chars)
         # Respond with 'y' or 'n' according as 'a' is most freq
         self.yesno = yesno
-        # Only needed if yesno is True
-        self.token_to_id = token_to_id
         # floor_prob = 0.3  # prevent extremely unlikely tokens
         # self.probs = np.array([floor_prob + self.rng.random()
         #                       for _ in range(self.num_chars)])
@@ -233,7 +257,7 @@ class Simple_Freq_inputs:
                     done = True
         input_seq.append('E')  # seq always ends in E
         if self.yesno:
-            if most_freq == self.token_to_id['a']:
+            if most_freq == 'a':
                 label = 'y'
             else:
                 label = 'n'
@@ -420,7 +444,10 @@ def example1b():
 
 
 def example1c():
-    vocab = ['a', 'b', 'c', 'd', 'e', 'f', 'y', 'n'
+    vocab = ['a', 'b',
+             'c', 'd',
+             #  'e', 'f',
+             'y', 'n',
              #  'g', 'h', 'i', 'j',
              'E', 'P']
     token_to_id = dict()
@@ -437,10 +464,10 @@ def example1c():
     max_len = 10
     batch_size = 20
     learning_rate = 0.01
-    num_epochs = 50
-    print_freq = 5
+    num_epochs = 200
+    print_freq = 10
 
-    sfi = Simple_Freq_inputs(chars, SEED, yesno=True, token_to_id=token_to_id)
+    sfi = Simple_Freq_inputs(chars, SEED, yesno=True)
     dataset_train, dataloader_train = sfi.make_dataset(
         token_to_id, num_inputs_train, min_len, max_len, batch_size)
     dataset_validate, _ = sfi.make_dataset(
@@ -450,15 +477,15 @@ def example1c():
         labels, num_classes=v)
     print(f'inverse_class_probs {inverse_class_probs}')
 
-    print('First four training instances:')
+    print('First few training instances:')
     for i in range(4):
         x, y = dataset_train[i]
         x = ids_to_string(id_to_token, x)
         y = ids_to_string(id_to_token, y.unsqueeze(0))
         print(x, y)
 
-    model = Example1(v, inverse_class_probs)
-    # model = Example1(v)
+    model = Example1c(v, inverse_class_probs)
+    # model = Example1c(v)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     # print(f"initial params:")
     # print_params(model)
@@ -474,12 +501,16 @@ def example1c():
         if epoch % print_freq == 0 or epoch == 0 or epoch == num_epochs-1:
             print(f'epoch {epoch}: ' +
                   f'accuracy {accuracy:.5f}, loss {avg_loss:.5f}')
-            validate(model, dataset_validate, print_errs=True)
+            print_errs = epoch == num_epochs-1
+            validate(model, dataset_validate, print_errs=print_errs)
 
+    torch.save(model.state_dict(), 'example1c.pth')
     print(f"final params:")
-    print_params(model)
+    print_params(model, precision=3)
+    num_instances = 10
+    print(f'probs for first {num_instances} validation instances:')
     validate(model, dataset_validate,
-             print_probs=True, num_instances=4,
+             print_probs=True, num_instances=num_instances,
              id_to_token=id_to_token)
 
 
@@ -519,7 +550,7 @@ def example1():
 
 
 def main():
-    example1b()
+    example1c()
 
 
 if __name__ == "__main__":

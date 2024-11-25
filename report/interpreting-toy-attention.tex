@@ -688,11 +688,12 @@ model that detects the most frequent token in the input. We'll use a
 larger vocabulary: $\{\ta, \tb, \tc, \td, \te, \tf, \tE, \tP\}$. Input
 sequences will consist of 4--10 tokens drawn uniformly at random from
 \texttt{a}--\texttt{f}, terminated by \texttt{E}. Sequences are padded
-on the left with \texttt{P} tokens, so that all inputs are exactly 11
-tokens in length. Sequences with a tie for most frequent token are not
-permitted. Complete code for this example is available as
-\texttt{example1b()} of \texttt{example1\_model.py}. The first few
-examples of the training set are as follows.
+on the left \todo{explain why the left} with \texttt{P} tokens, so
+that all inputs are exactly 11 tokens in length. Sequences with a tie
+for most frequent token are not permitted. Complete code for this
+example is available as \texttt{example1b()} of
+\texttt{example1\_model.py}. The first few examples of the training
+set are as follows.
 \begin{center}
 \begin{tabular}{cc}
   \textbf{sequence} & \textbf{label} \\
@@ -730,8 +731,97 @@ four instances in the validation set:
 \end{center}
 
 
+\subsubsection*{Outputting tokens other than the most frequent}
 
+The minimal model is capable only of outputting frequent tokens
+(e.g. output \texttt{c} if \texttt{c} has a high frequency). If we
+want our transformer to output something other than the frequent token
+itself, we need to add to its architecture. Specifically, we add a
+$v \by v$ \emph{unembedding matrix} $U$. The attention matrix $A$ is calculated as for the minimal model: 
+$A = \sigma_\text{row}(X R\, X^T + M^\text{mask})$. But the output embedding $X'$ is now given by
+\begin{displaymath}
+  X' = A X U. 
+\end{displaymath}
+The output token, output probabilities, and loss function are computed
+from $X'$ as before. We refer to this model as the \emph{minimal model
+  with unembedding}. The role of $U$ is to transform the last row of
+the encoding $AX$ (which, as previously discussed, can be thought of
+as a linear combination of input tokens) into a different linear
+combination of input tokens. An interesting special case
+is that $U$ could be a permutation matrix mapping each token to a
+different token.
 
+Let's now examine an example in which $U$ is an arbitrary matrix
+learned from training data.  Our vocabulary will be
+$\{\ta, \tb, \tc, \td, \ty, \tn, \tE, \tP\}$. Random sequences of
+length 4--10 are generated in a similar fashion to the previous
+example, except using only tokens \texttt{a}--\texttt{d} instead of
+\texttt{a}--\texttt{f}. As previously, sequences are terminated with
+\texttt{E} and padded on the left with \texttt{P}. If \texttt{a} is
+the most frequent token in a sequence, it receives the label
+\texttt{y} (for Yes). Otherwise, it receives the label \texttt{n} (for
+No). Intuitively, we imagine the transformer answering the question,
+is \texttt{a} the most frequent token in this sequence?
+
+Complete code for this example is available as \texttt{example1c()} of
+\texttt{example1\_model.py}. The first few examples of the training
+set are:
+\begin{center}
+\begin{tabular}{cc}
+  \textbf{sequence} & \textbf{label} \\
+  \texttt{PPPPbbacbE} & \texttt{n} \\
+  \texttt{PbabbabddE} & \texttt{n} \\
+  \texttt{PdbdddcdaE} & \texttt{n} \\
+  \texttt{PPPadbaadE} & \texttt{y} \\
+\end{tabular}
+\end{center}
+After training to convergence, the minimal model  with unembedding achieves 98\%
+validation accuracy with the following parameters:
+\begin{displaymath}
+  \begin{aligned}
+  R_{\tE,:} &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \tE & 1.25 &  0.64 &  0.56 &  0.55 &  0.15 &  0.12 &  -16.9 & -1.77 \\
+      \end{block}
+    \end{blockarray} \\
+    U &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \ta & -28.84 & -12.81 & -12.03 & -12.04 & 0.15 & 0.11 & -1.27 & -3.52   \\
+        \tb & -28.32 & -13.12 & -12.73 & -12.24 & 0.17 & 0.18 & -1.08 & -3.69   \\
+        \tc & -28.49 & -13.14 & -12.35 & -12.28 & 0.05 & 0.09 & -1.38 & -3.33   \\
+        \td & -28.34 & -13.29 & -12.56 & -12.25 & -0.04 & -0.06 & -1.30 & -3.44   \\
+        \ty & \mathbf{16.00} & \mathbf{-11.25} & \mathbf{-12.49} & \mathbf{-12.62} & -0.32 & -0.16 & 0.05 & -18.43   \\
+        \tn & \mathbf{-14.61} & \mathbf{15.44} & \mathbf{17.17} & \mathbf{16.77} & -0.05 & -0.20 & 1.54 & 21.31   \\
+        \tE & -29.00 & -12.75 & -11.88 & -11.75 & -0.21 & 0.27 & -1.11 & -3.98   \\
+        \tP & -29.01 & -12.63 & -12.14 & -11.63 & -0.12 & 0.27 & -1.24 & -3.9  \\
+      \end{block}
+    \end{blockarray} \\    
+  \end{aligned}
+\end{displaymath}
+Here are the output probabilities for the first
+five instances in the validation set:
+\begin{center}
+\begin{tabular}{cccccccccc}
+  \textbf{sequence} & \textbf{label} & \multicolumn{8}{c}{\textbf{output probabilities}} \\
+  & & \texttt{a} & \texttt{b} & \texttt{c} & \texttt{d} & \texttt{y} & \texttt{n} & \texttt{E} & \texttt{P} \\
+\texttt{PPPabbddbE} & \texttt{n} & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & $3\times 10^{-6}$ & \textbf{1.00} & $\epsilon$ & $\epsilon$ \\
+\texttt{daadaccbaE} & \texttt{y} & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & \textbf{0.999} & 0.001 & $\epsilon$ & $\epsilon$ \\
+\texttt{cbbbdcdbbE} & \texttt{n} & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & \textbf{1.00} & $\epsilon$ & $\epsilon$ \\
+\texttt{PPPPPPabbE} & \texttt{n} & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 0.015 & \textbf{0.985} & $\epsilon$ & $\epsilon$ \\
+\texttt{PcaaaabdbE} & \texttt{y} & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & \textbf{1.00} & $4\times 10^{-5}$ & $\epsilon$ & $\epsilon$ \\
+\end{tabular}
+\end{center}
+In the above, $\epsilon$ represents a probability less than $10^{-9}$.
+
+% PPPabbddbE & n & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 3e-6 & 1.00 & $\epsilon$ & $\epsilon$
+% daadaccbaE & y & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 0.999 & 0.001 & $\epsilon$ & $\epsilon$
+% cbbbdcdbbE & n & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 1.00 & $\epsilon$ & $\epsilon$
+% PPPPPPabbE & n & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 0.015 & 0.985 & $\epsilon$ & $\epsilon$
+% PcaaaabdbE & y & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 1.00 & 4e-05 & $\epsilon$ & $\epsilon$
 
 
 
