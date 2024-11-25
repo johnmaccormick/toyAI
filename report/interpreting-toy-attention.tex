@@ -4,6 +4,14 @@
 
 \newcommand{\ta}{\mathtt{a}}
 \newcommand{\tb}{\mathtt{b}}
+\newcommand{\tc}{\mathtt{c}}
+\newcommand{\td}{\mathtt{d}}
+\newcommand{\te}{\mathtt{e}}
+\newcommand{\tf}{\mathtt{f}}
+\newcommand{\tg}{\mathtt{g}}
+\renewcommand{\th}{\mathtt{h}}
+\newcommand{\ti}{\mathtt{i}}
+\newcommand{\tj}{\mathtt{j}}
 \newcommand{\tn}{\mathtt{n}}
 \newcommand{\tm}{\mathtt{m}}
 \newcommand{\tx}{\mathtt{x}}
@@ -12,6 +20,16 @@
 \newcommand{\tP}{\mathtt{P}}
 \newcommand{\bV}{\mathbf{V}}
 \newcommand{\sR}{\mathbb{R}}
+\newcommand{\cL}{\mathcal{L}}
+\newcommand{\dLdR}{\frac{\partial L}{\partial R}}
+\newcommand{\by}{\times}
+
+
+\newcommand{\todo}[1]{\emph{Todo: #1}}
+
+\DeclareMathOperator*{\argmax}{argmax}
+\DeclareMathOperator*{\argmin}{argmin}
+
 
 \title{Interpreting attention with toy models}
 \author{John MacCormick}
@@ -41,17 +59,17 @@ more realistic application.
 
 We write $v$ for the size of the vocabulary, i.e.\ $v=|\bV|=4$ for the
 above example. Tokens in a vocabulary are assigned ID numbers starting
-from 1. In our initial example the ID numbers are
-$\ta\to 1, \tb\to 2, \tE\to 3, \tP\to 4.$
+from 0. In our initial example the ID numbers are
+$\ta\to 0, \tb\to 1, \tE\to 2, \tP\to 3.$
 
 The input to a transformer is a sequence of tokens. We use the one-hot
 embedding of tokens in $\sR^v$, so the token with ID number $i$ is
-mapped to a $1 \times v$ row vector whose $i$th coordinate is 1 and
+mapped to a $1 \by v$ row vector whose $i$th coordinate is 1 and
 remaining coordinates are zeroes. For example, token $\tE$ maps to
 $(0,0,1,0)$. We use $n$ to denote the number of tokens in an input
 sequence. A sequence of $n$ tokens maps (i.e. embeds) to a
-$n \times v$ \emph{embedded matrix}, denoted $X$. For example, the
-input $s = \mathtt{baE}$ embeds as
+$n \by v$ \emph{input embedding}, denoted $X$. For example, the input
+sequence $s = (\tb, \ta, \tE)$ embeds as
 \begin{displaymath}
   X = X(s)=
 \begin{pmatrix}
@@ -60,7 +78,9 @@ input $s = \mathtt{baE}$ embeds as
 0 & 0 & 1 & 0 
 \end{pmatrix}.
 \end{displaymath}
-As shown in this equation, we often omit the dependence of $X$ on $s$.
+As shown in this equation, we often omit the dependence of $X$ on
+$s$. Code for this numerical example is available in
+\texttt{example1.py}.
 
 We will often label matrix rows and columns with corresponding
 tokens. For example, the $X$ above can be written with column labels
@@ -78,53 +98,641 @@ follows:
     \end{blockarray}
 \end{displaymath}
 
+\todo{More notation, such as
+  $X_{03}, X_{\tE 2}, X_{2,:}, X_{:,-1}, X_{\tE,:}$}
+
 In our toy system, the amount of attention between ordered pairs of
-tokens is specified by a $v \times v$ \emph{relationship matrix}
+tokens is specified by a $v \by v$ \emph{relationship matrix}
 $R$. (Most authors do not define $R$ directly, instead deriving it
 from query and key matrices $W_q, W_k$. We will incorporate query and
 key matrices in our framework below, but the simplest toy model is
 best defined in terms of $R$ directly.)
-% The relationship matrix $R$ has the following properties:
-% \begin{itemize}
-% \item Element $R_{ij}$ conveys the amount of attention paid by token $i$ to token $j$, with higher values implying greater attention.
-% \item Entries of $R$ use units that scale logarithmically:
-%   $R_{ij}=-\infty$ implies zero attention from $i$ to $j$; any finite
-%   value of $R_{ij}$ (including negative or zero) implies nonzero
-%   attention; adding a fixed increment to $R_{ij}$ increases the
-%   implied attention by a multiplicative factor.
-% \end{itemize}
-% The logarithmic units are due to the fact that a softmax function will
-% be applied later, during the attention computation. The softmax
-% function involves exponentiation, which will transform $-\infty$ to 0
-% and any finite value (including negative or zero) to a positive value.
+
 The relationship matrix $R$ has the following properties:
 \begin{itemize}
 \item Element $R_{ij}$ conveys the amount of attention paid by token $i$ to token $j$, with higher values implying greater attention.
-\item Entries of $R$ are nonnegative.
-\item Rows of $R$ sum to 1, so the total amount of attention paid by a
-  given token to all other token sums to 1.
+\item Entries of $R$ use units that scale logarithmically:
+  $R_{ij}=-\infty$ implies zero attention from $i$ to $j$; any finite
+  value of $R_{ij}$ (including negative or zero) implies nonzero
+  attention; adding a fixed increment to $R_{ij}$ increases the
+  implied attention by a multiplicative factor.
 \end{itemize}
+The logarithmic units are due to the fact that a softmax function will
+be applied later, during the attention computation. The softmax
+function involves exponentiation, which will transform $-\infty$ to 0
+and any finite value (including negative or zero) to a positive
+value. \todo{Mention 0=moderate/intermediate. And rows invariant to
+  additive constants}
+
 Here is an example of a possible relationship matrix for the
-vocabulary $\bV$ given above:
+vocabulary $\bV$ given above: 
 \begin{displaymath}
   R = 
     \begin{blockarray}{ccccc}
        & \ta & \tb & \tE & \tP  \\
       \begin{block}{c(cccc)}
-        \ta & 0 & 1 & 0 & 0 \\
-        \tb & 0.5 & 0.5 & 0 & 0 \\
-        \tE & 0.25 & 0.25 & 0.25 & 0.25 \\
-        \tP & 0 & 0 & 0 & 1 \\
+        \ta & 0 & 2 & 0 & -\infty \\
+        \tb & 0.5 & 1.5 & 0 & -\infty \\
+        \tE & 0.2 & 0.1 & 0 & -\infty \\
+        \tP & -\infty & -\infty & -\infty & 0 \\
       \end{block}
     \end{blockarray}
 \end{displaymath}
-The pairwise attention of tokens in an input string is defined via
+% The relationship matrix $R$ has the following properties:
+% \begin{itemize}
+% \item Element $R_{ij}$ conveys the amount of attention paid by token $i$ to token $j$, with higher values implying greater attention.
+% \item Entries of $R$ are nonnegative.
+% \item Rows of $R$ sum to 1, so the total amount of attention paid by a
+%   given token to all other token sums to 1.
+% \end{itemize}
+% Here is an example of a possible relationship matrix for the
+% vocabulary $\bV$ given above:
+% \begin{displaymath}
+%   R = 
+%     \begin{blockarray}{ccccc}
+%        & \ta & \tb & \tE & \tP  \\
+%       \begin{block}{c(cccc)}
+%         \ta & 0 & 1 & 0 & 0 \\
+%         \tb & 0.5 & 0.5 & 0 & 0 \\
+%         \tE & 0.25 & 0.25 & 0.25 & 0.25 \\
+%         \tP & 0 & 0 & 0 & 1 \\
+%       \end{block}
+%     \end{blockarray}
+% \end{displaymath}
+
+The pairwise attention of tokens in an input sequence is defined via
 $R$. Specifically, given input sequence $s$ of length $n$, we first
-calculate the embedded matrix $X\equiv X(s)$, then define the
-$n \times n$ attention matrix $A$ by
+calculate the input embedding $X\equiv X(s)$, then define the
+$n \by n$ \emph{pre-attention matrix} $A^\text{pre}$ by
 \begin{displaymath}
-  A = A(s) = A(X) = X R\, X^T
+  A^\text{pre} = A^\text{pre}(s) = A^\text{pre}(X) = X R\, X^T
 \end{displaymath}
+Substituting in our current example, we obtain
+{\footnotesize
+  \begin{multline*}
+    A^\text{pre} =
+\begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{c(cccc)}
+        \tb & 0 & 1 & 0 & 0 \\
+        \ta & 1 & 0 & 0 & 0 \\
+        \tE & 0 & 0 & 1 & 0 \\
+      \end{block}
+    \end{blockarray}
+   \,\,\times
+    \begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{c(cccc)}
+        \ta & 0 & 2 & 0 & -\infty \\
+        \tb & 0.5 & 1.5 & 0 & -\infty \\
+        \tE & 0.2 & 0.1 & 0 & -\infty \\
+        \tP & -\infty & -\infty & -\infty & 0 \\
+      \end{block}
+    \end{blockarray}    
+    \,\,\times
+\begin{blockarray}{cccc}
+       & \tb & \ta & \tE   \\
+      \begin{block}{c(ccc)}
+        \ta & 0 & 1 & 0  \\
+        \tb & 1 & 0 & 0  \\
+        \tE & 0 & 0 & 1  \\
+        \tP & 0 & 0 & 0  \\
+      \end{block}
+\end{blockarray}.
+\end{multline*}
+}
+The simple structure of the input embedding $X$---a single 1 in each
+row---picks out individual elements from $R$ in the order of the input
+sequence, resulting in
+\begin{displaymath}
+  A^\text{pre} =
+  \begin{blockarray}{cccc}
+       & \tb & \ta & \tE   \\
+      \begin{block}{c(ccc)}
+        \tb & 1.5 & 0.5 & 0  \\
+        \ta & 2 & 0 & 0  \\
+        \tE & 0.1 & 0.2 & 0  \\
+      \end{block}
+  \end{blockarray}
+\end{displaymath}
+This calculation employs the convention that $0 \times -\infty =
+0$. This can be justified by substituting a large negative number such
+as $-10^9$ for $-\infty$, which leads to numerically indistinguishable
+results after the exponentiation operation below.\footnote{Most
+  authors also scale the pre-attention matrix $A^\text{pre}$ by a
+  factor of $1/\sqrt{d}$, where $d$ is the embedding dimension,
+  i.e. the width of the input embedding $X$. (Because we use a one-hot
+  embedding, we have $d=v$.) However, we omit the $1/\sqrt{d}$ factor
+  here.  The need for $1/\sqrt{d}$ scaling arises because, in most
+  presentations, $R$ is formed from the product of two other matrices
+  $W_q$ and $W_k$. The height and/or width of these matrices is
+  $d$. So the elements in $R$ could be computed as the sum of $d$
+  terms. If we imagine that the terms are independent random standard
+  normal variates, the variance of this sum is proportional to
+  $\sqrt{d}$; dividing by $\sqrt{d}$ compensates for this, giving the
+  elements of $R$ unit variance under these assumptions. In any case,
+  for the small values of $d$ employed here, the rescaling has
+  relatively small effects on the results.}
+
+The interpretation of the previous matrix is clear. For example, the
+second row tells us that, given the input sequence $(\tb, \ta, \tE)$,
+token \texttt{a} attends strongly to \texttt{b} (2 on the log scale),
+and gives a baseline level of attention (0 on the log scale) to itself
+and to \texttt{E}. The attention to \texttt{b} will be a factor of
+$e^2\approx 7.4$ times stronger than the attention to the other tokens
+(baseline level $e^0=1)$.
+
+For most applications, it doesn't make sense for a token to attend to
+another token that occurs later in the sequence. Therefore, we apply
+to a mask to all elements above the main diagonal, replacing these
+elements with $-\infty$. Formally, we define an $n \by n$
+\emph{mask matrix} $M^\text{mask}$ by $M^\text{mask}_{i,j}=-\infty$
+for $j>i$ and 0 otherwise. For $n=3$, we have
+\begin{displaymath}
+  M^\text{mask} =
+    \begin{blockarray}{cccc}
+       & \tb & \ta & \tE   \\
+      \begin{block}{c(ccc)}
+        \tb & 0 & -\infty & -\infty  \\
+        \ta & 0 & 0 & -\infty  \\
+        \tE & 0 & 0 & 0  \\
+      \end{block}
+  \end{blockarray}
+\end{displaymath}
+
+The \emph{masked unscaled attention matrix} $A^\text{mskd}$ is given by
+\begin{displaymath}
+  A^\text{mskd} = A^\text{pre} + M^\text{mask}
+\end{displaymath}
+Using our example values, this gives
+\begin{displaymath}
+  A^\text{mskd} =
+  \begin{blockarray}{cccc}
+       & \tb & \ta & \tE   \\
+      \begin{block}{c(ccc)}
+        \tb & 1.5 & -\infty & -\infty  \\
+        \ta & 2 & 0 & -\infty  \\
+        \tE & 0.1 & 0.2 & 0  \\
+      \end{block}
+  \end{blockarray}
+\end{displaymath}
+
+The final attention matrix $A$ is obtained from these log-scale values
+by applying a row-wise softmax function $\sigma_\text{row}$. That is,
+each element is exponentiated with base $e$, then each row is
+normalized to sum to 1. Thus
+\begin{displaymath}
+\begin{aligned}
+  A &= \sigma_\text{row}(A^\text{mskd}) \\
+    &= \sigma_\text{row}(A^\text{pre} + M^\text{mask}) \\
+    &= \sigma_\text{row}(X R\, X^T + M^\text{mask}) \\
+\end{aligned}
+\end{displaymath}
+Our numerical example yields the attention matrix
+\begin{displaymath}
+  A =
+  \begin{blockarray}{cccc}
+       & \tb & \ta & \tE   \\
+      \begin{block}{c(ccc)}
+        \tb & 1 & 0 & 0  \\
+        \ta & 0.88 & 0.12 & 0  \\
+        \tE & 0.33 & 0.37 & 0.3  \\
+      \end{block}
+  \end{blockarray}
+\end{displaymath}
+
+The attention matrix $A$ tells us how to recombine the inputs,
+producing a modified sequence that is a linear combination of the
+original input tokens. Formally, the \emph{output embedding} $X'$ is
+given by
+% \begin{displaymath}
+%   X' = A X + X = (A+I)X,
+% \end{displaymath}
+% where $I$ is the $n \by n$ identity matrix. In our numerical example,
+% \begin{displaymath}
+% \begin{aligned}
+%   X' &=  \begin{blockarray}{cccc}
+%        & \tb & \ta & \tE   \\
+%       \begin{block}{c(ccc)}
+%         \tb & 1 & 0 & 0  \\
+%         \ta & 0.88 & 0.12 & 0  \\
+%         \tE & 0 & 0 & 1  \\
+%       \end{block}
+%     \end{blockarray}
+%     \,\,\times
+%     \begin{blockarray}{ccccc}
+%        & \ta & \tb & \tE & \tP  \\
+%       \begin{block}{c(cccc)}
+%         \tb & 0 & 1 & 0 & 0 \\
+%         \ta & 1 & 0 & 0 & 0 \\
+%         \tE & 0 & 0 & 1 & 0 \\
+%       \end{block}
+%     \end{blockarray}
+%     \,\,+
+%     \begin{blockarray}{ccccc}
+%        & \ta & \tb & \tE & \tP  \\
+%       \begin{block}{c(cccc)}
+%         \tb & 0 & 1 & 0 & 0 \\
+%         \ta & 1 & 0 & 0 & 0 \\
+%         \tE & 0 & 0 & 1 & 0 \\
+%       \end{block}
+%     \end{blockarray}    \\
+%     &= \begin{blockarray}{ccccc}
+%        & \ta & \tb & \tE & \tP  \\
+%       \begin{block}{r(cccc)}
+%         \tb & 0 & 1 & 0 & 0 \\
+%         0.12\ta + 0.88\tb & 0.12 & 0.88 & 0 & 0 \\
+%         \tE & 0 & 0 & 1 & 0 \\
+%       \end{block}
+%     \end{blockarray}
+%      \,\,+
+%     \begin{blockarray}{ccccc}
+%        & \ta & \tb & \tE & \tP  \\
+%       \begin{block}{c(cccc)}
+%         \tb & 0 & 1 & 0 & 0 \\
+%         \ta & 1 & 0 & 0 & 0 \\
+%         \tE & 0 & 0 & 1 & 0 \\
+%       \end{block}
+%     \end{blockarray}    \\
+%     &= \begin{blockarray}{ccccc}
+%        & \ta & \tb & \tE & \tP  \\
+%       \begin{block}{r(cccc)}
+%         2\tb & 0 & 2 & 0 & 0 \\
+%         1.12\ta + 0.88\tb & 1.12 & 0.88 & 0 & 0 \\
+%         2\tE & 0 & 0 & 2 & 0 \\
+%       \end{block}
+%     \end{blockarray} \\
+% \end{aligned}
+% \end{displaymath}
+\begin{displaymath}
+  X' = A X. 
+\end{displaymath}
+In our numerical example,
+\begin{displaymath}
+\begin{aligned}
+  X' &=  \begin{blockarray}{cccc}
+       & \tb & \ta & \tE   \\
+      \begin{block}{c(ccc)}
+        \tb & 1 & 0 & 0  \\
+        \ta & 0.88 & 0.12 & 0  \\
+        \tE & 0.33 & 0.37 & 0.30  \\
+      \end{block}
+    \end{blockarray}
+    \,\,\times
+    \begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{c(cccc)}
+        \tb & 0 & 1 & 0 & 0 \\
+        \ta & 1 & 0 & 0 & 0 \\
+        \tE & 0 & 0 & 1 & 0 \\
+      \end{block}
+    \end{blockarray}   \\
+    &= \begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{r(cccc)}
+        \tb & 0 & 1 & 0 & 0 \\
+        \ta & 0.12 & 0.88 & 0 & 0 \\
+        \tE & 0.37 & 0.33 & 0.30 & 0 \\
+      \end{block}
+    \end{blockarray}   \\
+    &\text{``=''} \begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{r(cccc)}
+        \tb & 0 & 1 & 0 & 0 \\
+        0.12\ta + 0.88\tb & 0.12 & 0.88 & 0 & 0 \\
+        0.37\ta + 0.33\tb + 0.30\tE & 0.37 & 0.33 & 0.30 & 0 \\
+      \end{block}
+    \end{blockarray} \\
+\end{aligned}
+\end{displaymath}
+In the final line of this equation, the equals sign in quotation marks
+(``='') indicates that the labeling of the rows has been changed to
+reflect the new content of the embedding. The second row is now a
+linear combination of the two tokens \texttt{a} and \texttt{b}. By
+abusing notation slightly, we can represent the second row of output
+as $0.12\ta + 0.88\tb$, and similarly for the third row. We could
+summarize the overall effect by saying that the input sequence
+$s = (\tb, \ta, \tE)$ has been transformed to the output sequence
+$s' = (\tb, 0.12\ta + 0.88\tb, 0.37\ta + 0.33\tb + 0.30\tE)$.
+
+In most treatments there would be three additional ingredients of the
+transformer architecture here. First, the input embedding $X$ would be
+normalized via layer normalization $\cL(X)$. Second, the
+attention-modified embedding $A\, \cL(X)$ would be multiplied on the right
+by a value matrix and output matrix, often denoted $W_v, W_o$
+respectively, producing $A\, \cL(X) W_v W_o$. Third, the output embedding
+would include the addition of a residual stream---that is, we add the
+original input embedding to produce the final result. So a
+conventional output embedding would be given by
+$X' = A \,\cL(X) W_v W_o + X$. We omit all three architectural ingredients
+here, to focus on a minimal version of attention that is more
+interpretable.
+
+
+\subsubsection*{From output sequence to output token}
+
+The most well-known application of transformer models is the task of
+responding to prompts using natural language. For example, the input
+could be a sequence of tokens representing the prompt ``What is a
+determinant?''  The resulting output could be a paragraph of text, for
+example beginning with, ``A determinant is a scalar value calculated
+from the elements of a square matrix\ldots''. Typically, this output
+is generated one token at a time. One simple strategy is to examine
+the final row of the output embedding, $X'_{-1,:}$, and choose the
+token with highest weight in that row. A more standard, but
+equivalent, procedure is to regard the final row $X'_{-1,:}$ as
+\emph{logits} for the output token: we first obtain estimated
+probabilities for the output tokens by taking the softmax of the final
+row, then choose the token whose ID has the highest probability. The
+estimated token probabilities are called \emph{output probabilities}
+and denoted by $p$:
+\begin{displaymath}
+  p = (p_0, p_1,\ldots, p_v) = \sigma(X'_{-1,:})
+\end{displaymath}
+In our numerical example,
+\begin{displaymath}
+  \begin{aligned}
+    p &= \sigma(0.37, 0.33, 0.30, 0) \\
+    &= (0.28, 0.27, 0.26, 0.19).\\
+\end{aligned}
+\end{displaymath}
+The ID of the most likely next token, $i_\text{out}$,
+is\footnote{Throughout this document, the notation $\argmax x$ for a
+  vector $x=(x_0, x_1, \ldots)$ is interpreted as $\argmax_i x_i$. The
+  index values are usually zero-based.}
+\begin{displaymath}
+  i_\text{out} = \argmax p = \argmax_i p_i
+\end{displaymath}
+In our numerical example, this gives
+\begin{displaymath}
+\begin{aligned}
+  i_\text{out} &= \argmax \,\,\sigma(0.37, 0.33, 0.30, 0)\\
+  &= \argmax \,(0.28, 0.27, 0.26, 0.19)\\
+  &= 0  \quad \text{\footnotesize using zero-based indices}\\
+  &\to \,\, \text{corresponds to token \texttt{a}, so $t_\text{out}=\ta$}.\\
+\end{aligned}
+\end{displaymath}
+We refer to this most-likely next token as the \emph{output token} of
+the computation and denote it by $t_\text{out}$. In our numerical
+example, $t_\text{out}=\ta$.
+
+\subsubsection*{Our restricted view of transformers}
+
+In addition to the simplified limited architecture above, we also take
+a restricted view of the transformer inputs and outputs. For the
+input, we consider only sequences that contain the end-of-sequence
+token \texttt{E} exactly once, in the final location.
+
+As for our view of the output, the result of the computation is always
+the single output token $t_\text{out}$. This contrasts with the
+typical application of transformers: typically, the output token
+$t_\text{out}$ is appended to the input sequence $s$, creating a new
+input sequence that will generate a new output token, and so on until
+the end-of-sequence token \texttt{E} is generated. However, in this
+document we do not consider this type of repeated application of
+transformer models. Instead, we consider only the scenario where the
+transformer is applied exactly once to an input sequence ending in
+\texttt{E}. Hence, the result of the computation is always the single
+output token $t_\text{out}$ (although sometimes we will also think of
+the vector of output probabilities $p$ as part of the output).
+
+\subsubsection*{Loss function}
+
+All experiments in this document use a loss function that depends on
+only a single number in the output: the output probability of the
+ground truth output token. Given input sequence $s$, denote the
+\emph{ground truth output token} for $s$ by $t_\text{gt}$. Then the
+output probability of the ground truth output token is
+$p_{t_\text{gt}}$.  The specific loss function used throughout this
+document is the crossentropy, which simplifies to a single negative
+log-probability in our case: the loss $L$ is given by
+\begin{displaymath}
+  L = -\log p_{t_\text{gt}}.
+\end{displaymath}
+Suppose, in the above numeric example, that the ground truth token for
+input \texttt{baE} is \texttt{b}. Then $p_{t_\text{gt}} = p_\tb = p_1 = 0.27$, so
+\begin{displaymath}
+  L = -\log 0.27 = 1.31.
+\end{displaymath}
+We can also use a computer program\footnote{See \texttt{example1()} in
+  \texttt{example1\_model.py}.} to calculate the gradient of $L$ with
+respect to $R$, again assuming ground truth token \texttt{b}. The
+gradient turns out to be
+\begin{displaymath}
+  \dLdR =
+      \begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{c(cccc)}
+        \ta & 0 & 0 & 0 & 0 \\
+        \tb & 0 & 0 & 0 & 0 \\
+        \tE & 0.13 & -0.22 & 0.10 & 0 \\
+        \tP & 0 & 0 & 0 & 0 \\
+      \end{block}
+    \end{blockarray}
+\end{displaymath}
+This demonstrates that the output depends only on one row,
+$R_{\tE,:}$, of the relationship matrix---a fact that is discussed in
+more detail below. The signs of the gradient also make sense here: an
+optimizer will shift values in the direction of negative gradient. So
+$\dLdR_{\tE,\tb}=-0.22$ implies that $R_{\tE,\tb}$ will be increased
+on the next training step, thus increasing the output probability for
+\texttt{b}. On the other hand, the positive gradients for
+$\dLdR_{\tE,\ta}$ and $\dLdR_{\tE,\tE}$ indicate that output
+probabilities for \texttt{a} and \texttt{E} will be decreased.
+
+
+\subsubsection*{The minimal model}
+
+We refer to the model described so far as the \emph{minimal model}. A
+complete summary of the minimal model is as follows. An input sequence
+$s$ of length $n$ is converted via one-hot encoding to an $n \by v$
+embedding matrix $X$. The attention matrix $A$ is calculated via
+\begin{displaymath}
+  A = \sigma_\text{row}(X R\, X^T + M^\text{mask}),
+\end{displaymath}
+then the output embedding $X'$ is given by
+\begin{displaymath}
+  X' = A X. 
+\end{displaymath}
+Finally, the index of the most likely next token is extracted from the
+final row of $X'$, which are regarded as logits:
+\begin{displaymath}
+  i_\text{out} = \argmax \sigma(X'_{-1,:}),
+\end{displaymath}
+and $t_\text{out}$ is the token with ID $i_\text{out}$.
+
+The output probabilities are given by
+\begin{displaymath}
+  p = (p_0, p_1,\ldots, p_v) = \sigma(X'_{-1,:}).
+\end{displaymath}
+Of particular interest is the probability $p_{t_\text{gt}}$
+corresponding to the ground truth output token $t_\text{gt}$. This is
+the only parameter of the loss function:
+\begin{displaymath}
+  L = -\log p_{t_\text{gt}}.
+\end{displaymath}
+
+
+
+\subsubsection*{A single row of $R$ affects the minimal model's output}
+
+Recall that $R_{\tE,:}$ denotes the row of $R$ corresponding to the
+end-of-sequence token \texttt{E}.  As we saw from the gradient
+computation above, a property of the minimal model is that the output
+is affected only by $R_{\tE,:}$.  The other rows of $R$ are
+irrelevant.
+
+This can be deduced by working backward from the output:
+$i_\text{out}$ depends only on the final row of $X'$, which
+corresponds to \texttt{E} (because we assume the input is always
+terminated by \texttt{E}). The final row of $X'$ depends only on the
+final row of $A$, which depends only on the final row of
+$A^\text{pre}$. This final row also corresponds to \texttt{E}, again
+because \texttt{E} is the last input token. But each row of
+$A^\text{pre}$ consists of elements drawn from the corresponding row
+of $R$, which is $R_{\tE,:}$.
+
+\subsubsection*{Explicit calculation of  the minimal model output}
+
+Using the observation that only a single row of $R$ affects the
+output, we can explicitly calculate the model output. Write
+$R_{\tE,:}$ as $r_0, r_1, \ldots, r_{v-1}$. Suppose the frequencies of
+tokens in the input sequence are $n_0, n_1, \ldots, n_{v-1}$. Then the
+final row of $A^\text{pre}$ contains $n_0$ copies of $r_0$, $n_1$
+copies of $r_1$, and so on. These also appear, exponentiated and
+normalized, in the final row of $A$. When this final row is
+post-multiplied by $X$ to produce $X'$, the copies corresponding to
+each token are collected together, producing output probabilities
+proportional to $(n_0 e^{r_0}, n_1 e^{r_1}, \ldots)$. Hence, the
+output token ID is $\argmax_i n_i e^{r_i}$. \todo{Improve explanation
+  by making it clearer and adding example.}
+
+
+\subsubsection*{The minimal model can select the most frequent token}
+
+A special case of the previous discussion is when the entries of
+$R_{\tE,:}$ are all equal. Then, the logits are proportional to the
+frequencies of tokens in the input sequence. So the output token is
+the most frequent token of the input. (Ties are broken by the argmax
+function; for concreteness let's assume it returns the smallest
+maximizing index.)
+
+When the entries of $R_{\tE,:}$ are not all equal, we can still
+understand the output in terms of frequencies weighted by importance
+factors. Specifically, token $i$ has an importance factor $e^{r_i}$,
+and we select the token with maximal importance-weighted frequency
+$n_i e^{r_i}$.
+
+\subsubsection*{An \texttt{a}-detector}
+
+As a simple example of the ability of the attention mechanism to count
+frequencies, consider the dataset consisting of only four sequences with
+associated labels:
+\begin{center}
+\begin{tabular}{cc}
+  \textbf{sequence} & \textbf{label} \\
+  \texttt{aaE} & \texttt{a} \\
+  \texttt{abE} & \texttt{a} \\
+  \texttt{baE} & \texttt{a} \\
+  \texttt{bbE} & \texttt{b} \\
+\end{tabular}
+\end{center}
+We can interpret this dataset as detecting the presence of an
+\texttt{a}: the response to any input sequence containing an \texttt{a}
+is \texttt{a}; otherwise the response is \texttt{b}.
+
+To verify our understanding of the minimal model, we can train it on
+the above dataset. Details are available in the function
+\texttt{example1a()} of \texttt{example1\_model.py}. When the training
+converges (starting from one particular random initialization) the
+resulting parameter values are
+\begin{displaymath}
+  R_{\tE,:} =
+  \begin{blockarray}{ccccc}
+       & \ta & \tb & \tE & \tP  \\
+      \begin{block}{r(cccc)}
+        \tE &  8.72 & -1.04 & -9.41 & * \\
+      \end{block}
+    \end{blockarray} \\
+\end{displaymath}
+Here, ``*'' indicates a value that is irrelevant, because the gradient
+with respect to that parameter is zero and the parameter's value
+therefore never changes from its initial random value. The values
+above are intuitively reasonable, because the high attentiveness of
+\texttt{E} to \texttt{a} , 8.72, will encourage a high output
+probability for \texttt{a} whenever it is present. But when no
+\texttt{a}'s are present, the highest remaining attentiveness is given
+to \texttt{b} (-1.04), meaning that \texttt{b} will have a high output
+probability in that situation.
+
+This can be verified by examining the actual output probabilities for
+the above parameter settings:
+\begin{center}
+\begin{tabular}{cccccc}
+  \textbf{sequence} & \textbf{label} & \multicolumn{4}{c}{\textbf{output probabilities}} \\
+  & & \texttt{a} & \texttt{b} & \texttt{E} & \texttt{P} \\
+  \texttt{aaE} & \texttt{a} & 0.48 & 0.17 & 0.17 & 0.17 \\
+  \texttt{abE} & \texttt{a} & 0.48 & 0.17 & 0.17 & 0.17 \\
+  \texttt{baE} & \texttt{a} & 0.48 & 0.17 & 0.17 & 0.17 \\
+  \texttt{bbE} & \texttt{b} & 0.17 & 0.48 & 0.17 & 0.17 \\
+\end{tabular}
+\end{center}
+
+
+
+
+\subsubsection*{A most-frequent-token detector}
+
+For our next demonstration of the minimal model, let's construct a
+model that detects the most frequent token in the input. We'll use a
+larger vocabulary: $\{\ta, \tb, \tc, \td, \te, \tf, \tE, \tP\}$. Input
+sequences will consist of 4--10 tokens drawn uniformly at random from
+\texttt{a}--\texttt{f}, terminated by \texttt{E}. Sequences are padded
+on the left with \texttt{P} tokens, so that all inputs are exactly 11
+tokens in length. Sequences with a tie for most frequent token are not
+permitted. Complete code for this example is available as
+\texttt{example1b()} of \texttt{example1\_model.py}. The first few
+examples of the training set are as follows.
+\begin{center}
+\begin{tabular}{cc}
+  \textbf{sequence} & \textbf{label} \\
+  \texttt{PPPPccadcE} & \texttt{c} \\
+  \texttt{PbbccabffE} & \texttt{b} \\
+  \texttt{PfbfefdeaE} & \texttt{f} \\
+  \texttt{PPPbfbbafE} & \texttt{b} \\
+\end{tabular}
+\end{center}
+
+After training to convergence, the minimal model achieves 100\%
+validation accuracy with the following parameters:
+\begin{displaymath}
+  R_{\tE,:} =
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \te & \tf & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \tE & 1.82 &  1.78 &  1.64 &  1.80 &  1.84 &   1.72 & -16.0 & -16.3 \\
+      \end{block}
+    \end{blockarray} \\
+\end{displaymath}
+This is as expected. Token \texttt{E} attends to parameters
+\texttt{a}--\texttt{f} approximately equally, but attends far less to
+itself and \texttt{P}. Here are the output probabilities for the first
+four instances in the validation set:
+\begin{center}
+\begin{tabular}{cccccccccc}
+  \textbf{sequence} & \textbf{label} & \multicolumn{8}{c}{\textbf{output probabilities}} \\
+  & & \texttt{a} & \texttt{b} & \texttt{c} & \texttt{d} & \texttt{e} & \texttt{f} & \texttt{E} & \texttt{P} \\
+\texttt{PPPPPbfcfE} & \texttt{f} & 0.11 & 0.14 & 0.14 & 0.11 & 0.11 & \textbf{0.18} & 0.11 & 0.11 \\
+\texttt{PafbffdccE} & \texttt{f} & 0.13 & 0.12 & 0.14 & 0.13 & 0.11 & \textbf{0.16} & 0.11 & 0.11 \\
+\texttt{cfbbffdafE} & \texttt{f} & 0.12 & 0.14 & 0.12 & 0.12 & 0.11 & \textbf{0.17} & 0.11 & 0.11 \\
+\texttt{PdcfeaddaE} & \texttt{d} & 0.14 & 0.11 & 0.12 & \textbf{0.16} & 0.12 & 0.12 & 0.11 & 0.11 \\
+\end{tabular}
+\end{center}
+
+
+
+
+
 
 
 \end{document}
