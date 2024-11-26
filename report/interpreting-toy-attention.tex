@@ -623,7 +623,7 @@ factors. Specifically, token $i$ has an importance factor $e^{r_i}$,
 and we select the token with maximal importance-weighted frequency
 $n_i e^{r_i}$.
 
-\subsubsection*{An \texttt{a}-detector}
+\subsubsection*{Example 1a: An \texttt{a}-detector}
 
 As a simple example of the ability of the attention mechanism to count
 frequencies, consider the dataset consisting of only four sequences with
@@ -681,7 +681,7 @@ the above parameter settings:
 
 
 
-\subsubsection*{A most-frequent-token detector}
+\subsubsection*{Example 1b: A most-frequent-token detector}
 
 For our next demonstration of the minimal model, let's construct a
 model that detects the most frequent token in the input. We'll use a
@@ -731,7 +731,7 @@ four instances in the validation set:
 \end{center}
 
 
-\subsubsection*{Outputting tokens other than the most frequent}
+\subsubsection*{Example 1c: Outputting tokens other than the most frequent}
 
 The minimal model is capable only of outputting frequent tokens
 (e.g. output \texttt{c} if \texttt{c} has a high frequency). If we
@@ -802,6 +802,8 @@ validation accuracy with the following parameters:
     \end{blockarray} \\    
   \end{aligned}
 \end{displaymath}
+\todo{add interpretation of the above}
+
 Here are the output probabilities for the first
 five instances in the validation set:
 \begin{center}
@@ -815,14 +817,164 @@ five instances in the validation set:
 \texttt{PcaaaabdbE} & \texttt{y} & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & \textbf{1.00} & $4\times 10^{-5}$ & $\epsilon$ & $\epsilon$ \\
 \end{tabular}
 \end{center}
+\todo{add interpretation of the above}
 In the above, $\epsilon$ represents a probability less than $10^{-9}$.
 
-% PPPabbddbE & n & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 3e-6 & 1.00 & $\epsilon$ & $\epsilon$
-% daadaccbaE & y & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 0.999 & 0.001 & $\epsilon$ & $\epsilon$
-% cbbbdcdbbE & n & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 1.00 & $\epsilon$ & $\epsilon$
-% PPPPPPabbE & n & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 0.015 & 0.985 & $\epsilon$ & $\epsilon$
-% PcaaaabdbE & y & $\epsilon$ & $\epsilon$ & $\epsilon$ & $\epsilon$ & 1.00 & 4e-05 & $\epsilon$ & $\epsilon$
+\subsubsection*{Multiple attention layers}
+
+To achieve functionality beyond counting frequencies, we can add more
+layers of attention. A two-layer model, with unembedding matrix, works
+as follows. We now have two $v \by v$ relationship matrices, $R^{(0)}$
+and $R^{(1)}$, corresponding to layer 0 and layer 1. Superscripts for
+other quantities indicate a corresponding layer in the same way. The
+$n \by v$ input embedding is now denoted $X^{(0)}$.
+\begin{displaymath}
+\begin{aligned}
+  A^{(0)} &= \sigma_\text{row}(X^{(0)} R^{(0)}\, {X^{(0)}}^T + M^\text{mask}) \\
+  X^{(1)} &= A^{(0)} X^{(0)} \\
+  A^{(1)} &= \sigma_\text{row}(X^{(1)} R^{(1)}\, {X^{(1)}}^T + M^\text{mask}) \\
+  X' &= A^{(1)} X^{(1)} U
+\end{aligned}
+\end{displaymath}
+
+Let's see how the two-layer model performs on a task we already
+tackled with a single layer: returning token \texttt{y} if \texttt{a}
+is the most frequent token of the input sequence, and \texttt{n}
+otherwise. Inputs are generated as for example~1c. The two-layer model
+achieves 100\% accuracy on the validation set, improving on the
+one-layer model's 98\%. The parameters at convergence are as follows
+
+\begin{displaymath}
+  \begin{aligned}
+  R^{(0)} &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \ta &  \mathbf{4.5} & -1.8 & -3.6 & -4.  & -0.3 & -0.1 & 0.0  & -3.4 \\
+        \tb & -3.5 &  \mathbf{5.0}  &  0.3 &  1.3 & -0.1 & -0.3 & 0.0  & -3.6 \\
+        \tc & -2.4 & -3.  &  \mathbf{5.1} & -2.7 &  0.  & -0.1 & -0.1 & -3.1 \\
+        \td & -2.1 & -3.7 & -0.3 &  \mathbf{5.5} &  0.1 & 0.0  & -0.1 & -2.9 \\
+        \ty & -0.1 &  0.1 &  0.1 & -0.2 & -0.1 & -0.2 &  0.0  & -0.1 \\
+        \tn &  0.1 &  0.0  & 0.0  & -0.1 & -0.2 & -0.2 &  0.2 & 0.0  \\
+        \tE &  \mathbf{1.4} &  \mathbf{0.7} &  \mathbf{1.5} &  \mathbf{1.4} &  0.1 &  0.1 & -0.3 & -4.5 \\
+        \tP &  0.2 &  0.  &  0.1 & 0.0  & -0.1 & -0.2 &  0.1 & -0.1 \\
+      \end{block}
+    \end{blockarray} \\
+  R^{(1)}_{\tE,:} &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \tE & \mathbf{1.0}  &  \mathbf{2.3} &  \mathbf{1.9} &  \mathbf{2.6} & 0.0  &  0.2 &  \mathbf{5.3} & -4.5 \\
+      \end{block}
+    \end{blockarray} \\
+    U &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \ta & -7.2 & -6.3 & -6.3 & -6.5 & -0.1 & 0.0  & -5.5 & -1.4 \\
+        \tb & -7.1 & -6.5 & -6.3 & -6.4 &  0.1 & -0.3 & -5.  & -1.1 \\
+        \tc & -7.2 & -6.3 & -6.3 & -6.7 &  0.2 &  0.1 & -5.2 & -0.9 \\
+        \td & -7.1 & -6.4 & -6.1 & -6.4 & -0.1 &  0.3 & -5.1 & -0.7 \\
+        \ty & \mathbf{10.6} & -8.6 & -6.4 & -7.  &  0.2 & -0.3 & -2.2 &  0.5 \\
+        \tn & -7.9 & \mathbf{11.1} &  \mathbf{9.6} &  \mathbf{9.9} &  0.0  & 0.0  &  \mathbf{6.3} &  1.0  \\
+        \tE & -7.3 & -6.5 & -6.5 & -6.5 &  0.2 &  0.3 & -5.2 & -0.8 \\
+        \tP & -7.4 & -6.6 & -6.5 & -6.7 & -0.1 &  0.1 & -5.1 & -1.0 \\
+      \end{block}
+    \end{blockarray} \\    
+  \end{aligned}
+\end{displaymath}
+\todo{discuss and interpret these results}
+
+\subsubsection*{Multiple attention layers required: \texttt{a} before \texttt{b}}
+
+Now let's turn our attention to a task that requires multiple
+layers. We use the same vocabulary as the previous example:
+$\{\ta, \tb, \tc, \td, \ty, \tn, \tE, \tP\}$. An input sequence
+consists of a uniformly random sequence of \texttt{c} and \texttt{d}
+tokens, except that exactly one element is replaced with an \texttt{a}
+and exactly one is replaced with a \texttt{b}. The locations of
+\texttt{a} and \texttt{b} are also chosen uniformly at random. The
+length of these sequences is between 4 and 12 tokens, including the
+terminating \texttt{E}. Sequences are then padded on the left to make
+the length exactly 12. Sequences in which the \texttt{a} occurs before
+the \texttt{b} are labeled \texttt{y}; otherwise the label is
+\texttt{n}. Here are the first few instances of the training set:
+\begin{center}
+\begin{tabular}{cc}
+  \textbf{sequence} & \textbf{label} \\
+  \texttt{PPPPPcbcaccE} & \texttt{n} \\
+  \texttt{PPPPPPcadbcE} & \texttt{y} \\
+  \texttt{PPPPPPPPbacE} & \texttt{n} \\
+  \texttt{PPPPPPdbdadE} & \texttt{n} \\
+  \texttt{PPddcadccbdE} & \texttt{y} \\
+\end{tabular}
+\end{center}
+
+We can first verify that a single layer of attention is not sufficient
+to classify these sequences. The code for this example is available as
+\texttt{example2b()} of \texttt{example2\_model.py}. If we set the
+number of layers to 1, this code produces accuracy on the training and
+validation sets of around 50\%, the same as random guessing. As
+expected, a single layer is not sufficient.
+
+Using two layers, we obtain 100\% accuracy on the validation
+set. After convergence, the parameters are as follows.
+\begin{displaymath}
+  \begin{aligned}
+  R^{(0)} &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \ta & -2.0 & \mathbf{4.5} & -1.4 & -3.4 & -0.3 & -0.1 & 0.0 & -2.8 \\
+        \tb & \mathbf{4.6} & -4.2 & -2.2 & -3.9 & -0.1 & -0.3 & 0.0 & -3.4 \\
+        \tc & 0.4 & -1.4 & 1.7 & -1.1 & 0.0 & -0.1 & -0.1 & -0.6 \\
+        \td & 0.3 & -1.4 & 1.9 & -0.6 & 0.1 & 0.0 & -0.1 & -0.1 \\
+        \ty & -0.1 & 0.1 & 0.1 & -0.2 & -0.1 & -0.2 & 0.0 & -0.1 \\
+        \tn & 0.1 & 0.0 & 0.0 & -0.1 & -0.2 & -0.2 & 0.2 & -0.0 \\
+        \tE & -0.3 & -2.6 & -1.0 & -2.5 & 0.1 & 0.1 & 4.3 & -2.2 \\
+        \tP & 0.2 & 0.0 & 0.1 & 0.0 & -0.1 & -0.2 & 0.1 & -0.1 \\
+      \end{block}
+    \end{blockarray} \\
+  R^{(1)}_{\tE,:} &= 
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \tE & \mathbf{6.0} & \mathbf{5.5} & -2.1 & -3.1 & 0.0 & 0.2 & -1.3 & -4.7 \\
+      \end{block}
+    \end{blockarray} \\
+    U &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
+      \begin{block}{r(cccccccc)}
+        \ta & -5.3 & -6.2 & -1.7 & -0.9 & -0.1 & 0.0 & -3.2 & -1.3 \\
+        \tb & -5.3 & -6.4 & -1.8 & -0.7 & 0.1 & -0.3 & -2.7 & -1.0 \\
+        \tc & -5.3 & -6.2 & -1.7 & -1.4 & 0.2 & 0.1 & -3.1 & -0.8 \\
+        \td & -5.2 & -6.3 & -1.5 & -0.8 & -0.1 & 0.3 & -2.9 & -0.6 \\
+        \ty & \mathbf{7.1} & -4.9 & 1.6 & 0.7 & 0.2 & -0.3 & 1.6 & 0.6 \\
+        \tn & -3.9 & \mathbf{6.7} & 2.1 & 1.2 & 0.0 & 0.0 & 2.6 & 0.9 \\
+        \tE & -5.4 & -6.4 & -2.0 & -0.8 & 0.2 & 0.3 & -3.0 & -0.8 \\
+        \tP & -5.5 & -6.5 & -1.9 & -1.1 & -0.1 & 0.1 & -2.8 & -1.2 \\
+      \end{block}
+    \end{blockarray} \\    
+  \end{aligned}
+\end{displaymath}
+It's particularly interesting to note the swapped token attention in
+$R^{(0)}$ here: \texttt{a} attends strongly to \texttt{b} and vice
+versa. Because the attention is masked, a \texttt{b} will only notice
+\texttt{a}'s that precede it; and vice versa. This is how the ordering
+of ``\texttt{a} before \texttt{b}'' is enforced without positional
+encoding.
+
+\subsubsection*{Positional encoding}
+
+\todo{The code for Positional encoding is available as
+\texttt{example???()} of \texttt{example3\_model.py}.}
 
 
+\vfill
+
+\noindent \todo{Sections to include, in no particular order: residual stream;
+  separate $W_k$ and $W_q$; something that requires three layers;
+  lookup table; positional encoding}
 
 \end{document}
