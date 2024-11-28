@@ -12,11 +12,13 @@ class TransformerParams:
         self.seed = 12321
         self.vocab_size = -1
         self.ctx_window = -1
+        self.embed_dim = -1
         self.num_layers = 1
         self.init_with_zeros = False
         self.use_mask = True
         self.use_pos_enc = False
         self.inverse_class_probs = None
+        self.verbose = False
 
 
 class Inputs:
@@ -116,22 +118,20 @@ class Data(torch.utils.data.Dataset):
 
 class RelationAttn(nn.Module):
 
-    def __init__(self, d: int, init_with_zeros, use_mask):
+    def __init__(self, tp: TransformerParams):
         super().__init__()
-        self.d = d
-        self.use_mask = use_mask
-        if not init_with_zeros:
+        self.tp = tp
+        d = tp.embed_dim
+        if not tp.init_with_zeros:
             self.R = nn.Parameter(torch.randn(d, d) / d)
         else:
             self.R = nn.Parameter(torch.zeros(d, d))
 
     def forward(self, encoding: torch.Tensor):
         assert encoding.ndim == 3
-        self.this_batch_size = encoding.shape[0]
-        b = self.this_batch_size
-        self.n = encoding.shape[1]
-        n = self.n
-        d = self.d
+        b = encoding.shape[0]  # this batch size
+        n = encoding.shape[1]  # number of input tokens
+        d = self.tp.embed_dim
 
         assert encoding.shape == (b, n, d)
         assert self.R.shape == (d, d)
@@ -141,8 +141,9 @@ class RelationAttn(nn.Module):
 
         A_unsc = torch.matmul(encR, encoding.transpose(dim0=1, dim1=2))
         assert A_unsc.shape == (b, n, n)
+        maybe_print_tensor(self.tp, 'A_unsc', A_unsc)
 
-        if self.use_mask:
+        if self.tp.use_mask:
             M_mask = self.make_mask(n)
         else:
             M_mask = torch.zeros(n, n)
@@ -152,8 +153,9 @@ class RelationAttn(nn.Module):
         assert A_mskd.shape == (b, n, n)
         A = torchfunc.softmax(A_mskd, dim=2)
         assert A.shape == (b, n, n)
+        maybe_print_tensor(self.tp, 'Attention matrix', A)
 
-        if self.use_mask:
+        if self.tp.use_mask:
             topleft = A[0, 0, 0].item()
             assert (abs(topleft-1.0) < 1e-5)
 
@@ -172,28 +174,22 @@ class RelationAttn(nn.Module):
 
 
 class TrivEmbed(nn.Module):
-    def __init__(self, vocab_size: int, ctx_window: int, use_pos_enc: bool):
+    def __init__(self, tp: TransformerParams):
         super().__init__()
-        self.vocab_size = vocab_size
-        self.ctx_window = ctx_window
-        self.use_pos_enc = use_pos_enc
-        if use_pos_enc:
-            self.d = vocab_size + ctx_window
-        else:
-            self.d = vocab_size
+        self.tp = tp
 
     def forward(self, token_ids):
         assert token_ids.ndim == 2
         self.this_batch_size = token_ids.shape[0]
         b = self.this_batch_size
         n = token_ids.shape[1]
-        assert n == self.ctx_window
-        v = self.vocab_size
-        d = self.d
+        assert n == self.tp.ctx_window
+        v = self.tp.vocab_size
+        d = self.tp.embed_dim
 
         token_enc = torchfunc.one_hot(token_ids, num_classes=v).float()
         assert token_enc.shape == (b, n, v)
-        if self.use_pos_enc:
+        if self.tp.use_pos_enc:
             pos_enc = torch.eye(n).expand(b, -1, -1)
             assert pos_enc.shape == (b, n, n)
             embedding = torch.cat([token_enc, pos_enc], dim=2)
@@ -205,33 +201,28 @@ class TrivEmbed(nn.Module):
 
 class RelationAttnLayers(nn.Module):
 
-    def __init__(self, d: int, num_layers: int,
-                 init_with_zeros: bool, use_mask: bool):
+    def __init__(self, tp: TransformerParams):
         super().__init__()
-        self.d = d
-        self.num_layers = num_layers
+        self.tp = tp
         self.attn_layers = nn.ModuleList()
-        for _ in range(num_layers):
-            attention_layer = RelationAttn(
-                d, init_with_zeros=init_with_zeros, use_mask=use_mask)
+        for _ in range(tp.num_layers):
+            attention_layer = RelationAttn(tp)
             self.attn_layers.append(attention_layer)
 
     def forward(self, X):
         assert X.ndim == 3
-        self.this_batch_size = X.shape[0]
-        b = self.this_batch_size
-        self.n = X.shape[1]
-        n = self.n
-        v = self.d
-        assert X.shape == (b, n, v)
+        b = X.shape[0]  # size of this batch
+        n = X.shape[1]  # number of tokens
+        d = self.tp.embed_dim
+        assert X.shape == (b, n, d)
 
         for attn in self.attn_layers:
             X = attn(X)
         X_prime = X
-        assert X_prime.shape == (b, n, v)
+        assert X_prime.shape == (b, n, d)
 
         X_prime_last_row = X_prime[:, -1, :]
-        assert X_prime_last_row.shape == (b, v)
+        assert X_prime_last_row.shape == (b, d)
 
         return X_prime_last_row
 
@@ -242,16 +233,14 @@ class Example3(nn.Module):
         torch.manual_seed(tp.seed)
         self.tp = tp
         if tp.use_pos_enc:
-            self.d = tp.vocab_size + tp.ctx_window
+            tp.embed_dim = tp.vocab_size + tp.ctx_window
         else:
-            self.d = tp.vocab_size
-        self.embed = TrivEmbed(tp.vocab_size, tp.ctx_window, tp.use_pos_enc)
-        self.attn_layers = RelationAttnLayers(
-            self.d, tp.num_layers, tp.init_with_zeros, tp.use_mask)
+            tp.embed_dim = tp.vocab_size
+        self.embed = TrivEmbed(tp)
+        self.attn_layers = RelationAttnLayers(tp)
         self.unembed = nn.Linear(
-            in_features=self.d, out_features=self.tp.vocab_size, bias=False)
+            in_features=tp.embed_dim, out_features=self.tp.vocab_size, bias=False)
         self.loss = nn.CrossEntropyLoss(weight=tp.inverse_class_probs)
-        self.verbose = False
 
     def forward(self, token_ids):
         assert token_ids.ndim == 2
@@ -259,19 +248,19 @@ class Example3(nn.Module):
         b = self.this_batch_size
         n = self.tp.ctx_window
         v = self.tp.vocab_size
-        d = self.d
+        d = self.tp.embed_dim
 
         embedding = self.embed(token_ids)
         assert embedding.shape == (b, n, d)
-        self.maybe_print_tensor('embedding', embedding)
+        maybe_print_tensor(self.tp, 'embedding', embedding)
 
         attn_outputs = self.attn_layers(embedding)
         assert attn_outputs.shape == (b, d)
-        self.maybe_print_tensor('attn_outputs', attn_outputs)
+        maybe_print_tensor(self.tp, 'attn_outputs', attn_outputs)
 
         logits = self.unembed(attn_outputs)
         assert logits.shape == (b, v)
-        self.maybe_print_tensor('logits', logits)
+        maybe_print_tensor(self.tp, 'logits', logits)
 
         return logits
 
@@ -295,9 +284,10 @@ class Example3(nn.Module):
         fig.tight_layout()
         plt.show()
 
-    def maybe_print_tensor(self, name: str, t: torch.Tensor):
-        if self.verbose:
-            print(f'{name}:\n{t.detach().numpy().round(1)}')
+
+def maybe_print_tensor(tp: TransformerParams, name: str, t: torch.Tensor):
+    if tp.verbose:
+        print(f'{name}:\n{t.detach().numpy().round(1)}')
 
 
 def visualize_matrix(matrix: torch.Tensor, row_labels: list[str],
@@ -587,7 +577,7 @@ def example3a():
     print(f"final params:")
     print_params(model, precision=1)
     validate(model, dataset, id_to_token=id_to_token, print_probs=True)
-    model.verbose = True
+    tp.verbose = True
     evaluate_input(model, 'abE', 'y', token_to_id)
     evaluate_input(model, 'baE', 'n', token_to_id)
 
