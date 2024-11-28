@@ -10,26 +10,37 @@ INF = 1e9
 SEED = 12321
 
 
-def visualize_matrix(matrix: torch.Tensor, labels: list[str], title: str):
+class TransformerParams:
+    pass
+
+
+def visualize_matrix(matrix: torch.Tensor, row_labels: list[str],
+                     col_labels: list[str], title: str,
+                     log_scale: bool, ax):
     # based on version written by Colab AI
 
     data = matrix.detach().numpy()
-    fig, ax = plt.subplots()
-    im = ax.imshow(np.exp(data), cmap='viridis')  # Choose a colormap
+    # fig, ax = plt.subplots()
+    if log_scale:
+        img_data = np.exp(data)
+    else:
+        img_data = data
+
+    im = ax.imshow(img_data, cmap='viridis')  # Choose a colormap
 
     # Show all ticks and label them with the respective list entries
-    ax.set_xticks(np.arange(len(labels)), labels=labels)
-    ax.set_yticks(np.arange(len(labels)), labels=labels)
+    ax.set_xticks(np.arange(len(col_labels)), labels=col_labels)
+    ax.set_yticks(np.arange(len(row_labels)), labels=row_labels)
 
     # Loop over data dimensions and create text annotations.
-    for i in range(len(labels)):
-        for j in range(len(labels)):
+    for i in range(len(row_labels)):
+        for j in range(len(col_labels)):
             text = ax.text(j, i, round(data[i, j], 1),
                            ha="center", va="center", color="w")
 
     ax.set_title(title)
-    fig.tight_layout()
-    plt.show()
+    # fig.tight_layout()
+    # plt.show()
 
 
 def make_mask(n_val):
@@ -122,11 +133,15 @@ class RelationAttn(nn.Module):
 
 
 class TrivEmbed(nn.Module):
-    def __init__(self, vocab_size: int, ctx_window: int):
+    def __init__(self, vocab_size: int, ctx_window: int, use_pos_enc: bool):
         super().__init__()
         self.vocab_size = vocab_size
         self.ctx_window = ctx_window
-        self.d = vocab_size + ctx_window
+        self.use_pos_enc = use_pos_enc
+        if use_pos_enc:
+            self.d = vocab_size + ctx_window
+        else:
+            self.d = vocab_size
 
     def forward(self, token_ids):
         assert token_ids.ndim == 2
@@ -139,12 +154,14 @@ class TrivEmbed(nn.Module):
 
         token_enc = torchfunc.one_hot(token_ids, num_classes=v).float()
         assert token_enc.shape == (b, n, v)
-        pos_enc = torch.eye(n).expand(b, -1, -1)
-        assert pos_enc.shape == (b, n, n)
-        embedding = torch.cat([token_enc, pos_enc], dim=2)
-        assert embedding.shape == (b, n, d)
-
-        return embedding
+        if self.use_pos_enc:
+            pos_enc = torch.eye(n).expand(b, -1, -1)
+            assert pos_enc.shape == (b, n, n)
+            embedding = torch.cat([token_enc, pos_enc], dim=2)
+            assert embedding.shape == (b, n, d)
+            return embedding
+        else:
+            return token_enc
 
 
 class Example1(nn.Module):
@@ -154,7 +171,7 @@ class Example1(nn.Module):
         self.vocab_size = vocab_size
         self.ctx_window = ctx_window
         self.d = vocab_size + ctx_window
-        self.embed = TrivEmbed(vocab_size, ctx_window)
+        self.embed = TrivEmbed(vocab_size, ctx_window, use_pos_enc=True)
         self.reln_attn = RelationAttn(self.d,
                                       init_with_zeros=init_with_zeros,
                                       use_mask=True)
@@ -248,18 +265,24 @@ class Example2(nn.Module):
 class Example3(nn.Module):
     def __init__(self, vocab_size: int, ctx_window: int,
                  num_layers: int, inverse_class_probs,
-                 init_with_zeros: bool, use_mask: bool):
+                 init_with_zeros: bool, use_mask: bool,
+                 use_pos_enc: bool):
         torch.manual_seed(SEED)
         super().__init__()
         self.vocab_size = vocab_size
         self.ctx_window = ctx_window
-        self.d = vocab_size + ctx_window
-        self.embed = TrivEmbed(vocab_size, ctx_window)
+        self.use_pos_enc = use_pos_enc
+        if use_pos_enc:
+            self.d = vocab_size + ctx_window
+        else:
+            self.d = vocab_size
+        self.embed = TrivEmbed(vocab_size, ctx_window, use_pos_enc)
         self.attn_layers = RelationAttnLayers(
             self.d, num_layers, init_with_zeros, use_mask)
         self.unembed = nn.Linear(
             in_features=self.d, out_features=self.vocab_size, bias=False)
         self.loss = nn.CrossEntropyLoss(weight=inverse_class_probs)
+        self.verbose = False
 
     def forward(self, token_ids):
         assert token_ids.ndim == 2
@@ -271,14 +294,41 @@ class Example3(nn.Module):
 
         embedding = self.embed(token_ids)
         assert embedding.shape == (b, n, d)
+        self.maybe_print_tensor('embedding', embedding)
 
         attn_outputs = self.attn_layers(embedding)
         assert attn_outputs.shape == (b, d)
+        self.maybe_print_tensor('attn_outputs', attn_outputs)
 
         logits = self.unembed(attn_outputs)
         assert logits.shape == (b, v)
+        self.maybe_print_tensor('logits', logits)
 
         return logits
+
+    def visualize(self, vocab):
+        if self.use_pos_enc:
+            mat_labels = matrix_labels(vocab, self.ctx_window)
+        else:
+            mat_labels = vocab
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+        R_matrix = self.attn_layers.attn_layers[0].R.data
+        title = 'R'
+        visualize_matrix(R_matrix, mat_labels, mat_labels,
+                         title, log_scale=True, ax=axes[0])
+
+        U_matrix = self.unembed.weight.data.transpose(dim0=0, dim1=1)
+        title = 'U'
+        visualize_matrix(U_matrix, mat_labels, vocab,
+                         title, log_scale=False, ax=axes[1])
+        fig.tight_layout()
+        plt.show()
+
+    def maybe_print_tensor(self, name: str, t: torch.Tensor):
+        if self.verbose:
+            print(f'{name}:\n{t.detach().numpy().round(1)}')
 
 
 def add_padding(ids_list, pad_idx, padded_len=None, on_right=True):
@@ -322,12 +372,7 @@ def validate(model, dataset,
                       f'pred_ID {pred_ID.item()}')
 
         if print_probs:
-            torch.set_printoptions(precision=2)
-            probs = torchfunc.softmax(y_pred, dim=1)
-            assert probs.shape == (model.this_batch_size, v)
-            x_str = ids_to_string(id_to_token, X)
-            y_str = ids_to_string(id_to_token, y.unsqueeze(0))
-            print(f'X {x_str}, y {y_str}, probs {probs}')
+            do_print_probs(model, id_to_token, v, X, y, y_pred)
 
         y_true = y.unsqueeze(0)
         assert y_true.shape == (1,)
@@ -340,6 +385,16 @@ def validate(model, dataset,
     avg_loss = tot_loss / len(dataset)
     accuracy = 1.0 - num_errs / len(dataset)
     print(f'validation accuracy {accuracy:.5f}, loss {avg_loss:.5f}')
+    return accuracy
+
+
+def do_print_probs(model, id_to_token, v, X, y, y_pred):
+    torch.set_printoptions(precision=2)
+    probs = torchfunc.softmax(y_pred, dim=1)
+    assert probs.shape == (model.this_batch_size, v)
+    x_str = ids_to_string(id_to_token, X)
+    y_str = ids_to_string(id_to_token, y.unsqueeze(0))
+    print(f'X {x_str}, y {y_str}, probs {probs}')
 
 
 def do_epoch(dataloader, model, optimizer):
@@ -482,6 +537,25 @@ def calc_inverse_class_probs(class_ids, num_classes):
     return inverse_probs
 
 
+def evaluate_input(model: Example3, x: str, y: str,
+                   token_to_id: dict[str, int]):
+    print(f'** evaluating {x} **')
+    model.eval()
+    x = torch.tensor([token_to_id[c] for c in x])
+    y = torch.tensor(token_to_id[y])
+
+    x = x.unsqueeze(0)
+    y = y.unsqueeze(0)
+    y_pred = model(x)
+    loss = model.loss(y_pred, y)
+    print(f'x {x}')
+    print(f'y {y}')
+    print(f'logits {y_pred}')
+    print(f'outprobs {torchfunc.softmax(y_pred, dim=1)}')
+    print(f'loss {loss}')
+    return loss
+
+
 def evaluate_gradient(model: Example1, x: torch.Tensor, y: torch.Tensor):
     model.train()
     model.zero_grad()
@@ -564,7 +638,8 @@ def example3a():
                    'E': 4,
                    }
     id_to_token = dict(map(reversed, token_to_id.items()))
-    v = len(token_to_id)
+    vocab = sorted(token_to_id, key=token_to_id.get)
+    v = len(vocab)
     # pad_idx = token_to_id['P']
 
     strs, labels = zip(('abE', 'y'),
@@ -584,12 +659,14 @@ def example3a():
         assert len(s) == ctx_window
 
     num_layers = 1
+    use_mask = False
+    use_pos_enc = True
     model = Example3(vocab_size=v, ctx_window=ctx_window, num_layers=num_layers,
                      inverse_class_probs=None, init_with_zeros=False,
-                     use_mask=False)
+                     use_mask=use_mask, use_pos_enc=use_pos_enc)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     # max_steps = 30
-    num_epochs = 6000
+    num_epochs = 3000
     print_freq = 1000
     print(f"initial params:")
     print_params(model, precision=2)
@@ -598,6 +675,17 @@ def example3a():
     # evaluate_gradient(model, x, y)
     # return
 
+    do_training(dataset, dataloader, model, optimizer, num_epochs, print_freq)
+
+    print(f"final params:")
+    print_params(model, precision=1)
+    validate(model, dataset, id_to_token=id_to_token, print_probs=True)
+    model.verbose = True
+    evaluate_input(model, 'abE', 'y', token_to_id)
+    evaluate_input(model, 'baE', 'n', token_to_id)
+
+
+def do_training(dataset, dataloader, model, optimizer, num_epochs, print_freq):
     for epoch in range(num_epochs):
         # print(f"starting epoch {epoch}, params:")
         # print_params(model)
@@ -607,10 +695,7 @@ def example3a():
             print(f'epoch {epoch}: ' +
                   f'accuracy {accuracy:.5f}, loss {avg_loss:.5f}')
             validate(model, dataset)
-
-    print(f"final params:")
-    print_params(model, precision=2)
-    validate(model, dataset, id_to_token=id_to_token, print_probs=True)
+    # model.visualize(vocab)
 
 
 def example2b():
@@ -876,7 +961,7 @@ def example1c():
             print_errs = epoch == num_epochs-1
             validate(model, dataset_validate, print_errs=print_errs)
 
-    torch.save(model.state_dict(), 'example1c.pth')
+    # torch.save(model.state_dict(), 'example1c.pth')
     print(f"final params:")
     print_params(model, precision=3)
     num_instances = 10

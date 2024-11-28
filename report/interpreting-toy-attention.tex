@@ -22,6 +22,7 @@
 \newcommand{\sR}{\mathbb{R}}
 \newcommand{\cL}{\mathcal{L}}
 \newcommand{\dLdR}{\frac{\partial L}{\partial R}}
+\newcommand{\Tr}{^{\intercal}} % transpose
 \newcommand{\by}{\times}
 
 
@@ -165,7 +166,7 @@ $R$. Specifically, given input sequence $s$ of length $n$, we first
 calculate the input embedding $X\equiv X(s)$, then define the
 $n \by n$ \emph{pre-attention matrix} $A^\text{pre}$ by
 \begin{displaymath}
-  A^\text{pre} = A^\text{pre}(s) = A^\text{pre}(X) = X R\, X^T
+  A^\text{pre} = A^\text{pre}(s) = A^\text{pre}(X) = X R\, X\Tr
 \end{displaymath}
 Substituting in our current example, we obtain
 {\footnotesize
@@ -285,7 +286,7 @@ normalized to sum to 1. Thus
 \begin{aligned}
   A &= \sigma_\text{row}(A^\text{mskd}) \\
     &= \sigma_\text{row}(A^\text{pre} + M^\text{mask}) \\
-    &= \sigma_\text{row}(X R\, X^T + M^\text{mask}) \\
+    &= \sigma_\text{row}(X R\, X\Tr + M^\text{mask}) \\
 \end{aligned}
 \end{displaymath}
 Our numerical example yields the attention matrix
@@ -548,7 +549,7 @@ complete summary of the minimal model is as follows. An input sequence
 $s$ of length $n$ is converted via one-hot encoding to an $n \by v$
 embedding matrix $X$. The attention matrix $A$ is calculated via
 \begin{displaymath}
-  A = \sigma_\text{row}(X R\, X^T + M^\text{mask}),
+  A = \sigma_\text{row}(X R\, X\Tr + M^\text{mask}),
 \end{displaymath}
 then the output embedding $X'$ is given by
 \begin{displaymath}
@@ -738,7 +739,7 @@ The minimal model is capable only of outputting frequent tokens
 want our transformer to output something other than the frequent token
 itself, we need to add to its architecture. Specifically, we add a
 $v \by v$ \emph{unembedding matrix} $U$. The attention matrix $A$ is calculated as for the minimal model: 
-$A = \sigma_\text{row}(X R\, X^T + M^\text{mask})$. But the output embedding $X'$ is now given by
+$A = \sigma_\text{row}(X R\, X\Tr + M^\text{mask})$. But the output embedding $X'$ is now given by
 \begin{displaymath}
   X' = A X U. 
 \end{displaymath}
@@ -802,6 +803,7 @@ validation accuracy with the following parameters:
     \end{blockarray} \\    
   \end{aligned}
 \end{displaymath}
+\todo{transpose above U}
 \todo{add interpretation of the above}
 
 Here are the output probabilities for the first
@@ -830,9 +832,9 @@ other quantities indicate a corresponding layer in the same way. The
 $n \by v$ input embedding is now denoted $X^{(0)}$.
 \begin{displaymath}
 \begin{aligned}
-  A^{(0)} &= \sigma_\text{row}(X^{(0)} R^{(0)}\, {X^{(0)}}^T + M^\text{mask}) \\
+  A^{(0)} &= \sigma_\text{row}(X^{(0)} R^{(0)}\, {X^{(0)}}\Tr + M^\text{mask}) \\
   X^{(1)} &= A^{(0)} X^{(0)} \\
-  A^{(1)} &= \sigma_\text{row}(X^{(1)} R^{(1)}\, {X^{(1)}}^T + M^\text{mask}) \\
+  A^{(1)} &= \sigma_\text{row}(X^{(1)} R^{(1)}\, {X^{(1)}}\Tr + M^\text{mask}) \\
   X' &= A^{(1)} X^{(1)} U
 \end{aligned}
 \end{displaymath}
@@ -883,6 +885,7 @@ one-layer model's 98\%. The parameters at convergence are as follows
     \end{blockarray} \\    
   \end{aligned}
 \end{displaymath}
+\todo{transpose above U}
 \todo{discuss and interpret these results}
 
 \subsubsection*{Multiple attention layers required: \texttt{a} before \texttt{b}}
@@ -958,6 +961,7 @@ set. After convergence, the parameters are as follows.
     \end{blockarray} \\    
   \end{aligned}
 \end{displaymath}
+\todo{transpose above U}
 It's particularly interesting to note the swapped token attention in
 $R^{(0)}$ here: \texttt{a} attends strongly to \texttt{b} and vice
 versa. Because the attention is masked, a \texttt{b} will only notice
@@ -967,14 +971,162 @@ encoding.
 
 \subsubsection*{Positional encoding}
 
-\todo{The code for Positional encoding is available as
-\texttt{example???()} of \texttt{example3\_model.py}.}
+Let's now incorporate positional encoding into our transformer model,
+in a way that is as transparent as possible. We accomplish this by
+using extra dimensions for the position embedding. We employ one-hot
+encoding for the positions, and concatenate this position embedding
+with the one-hot token embedding. The practical effect is extremely
+simple: the one-hot token embedding matrix is concatenated with an
+identity matrix.
+
+More formally, let $X_\text{tok}$ denote the $n \by v$ \emph{token
+  input embedding matrix}; this is the one-hot encoding of $n$ input
+tokens drawn from a vocabulary of $v$ tokens, which we previously
+denoted by $X$.  Let $X_\text{pos}$ denote the $n \by n$
+\emph{position embedding matrix}.  Our new version of the input
+embedding matrix $X$ is given by
+\begin{displaymath}
+  X = \left( X_\text{tok} | X_\text{pos} \right),
+\end{displaymath}
+where the vertical bar denotes concatenation of matrices.  In this
+document we always use the trivial position embedding, taking
+$X_\text{pos}=I_n$, the $n \by n$ identity matrix.
+
+For example, consider the vocabulary $\{\ta, \tb, \ty, \tn, \tE
+\}$. (The padding token is not needed for the next few examples and is
+deliberately omitted.) The input sequence $s=\mathtt{baE}$ is encoded as
+follows:
+\begin{displaymath}
+  X = X(s) = 
+    \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \ty & \tn & \tE & l_0 & l_1 & l_2 \\
+      \begin{block}{c(cccccccc)}
+        \tb & 0 & 1 & 0 & 0 & 0 & 1 & 0 & 0 \\
+        \ta & 1 & 0 & 0 & 0 & 0 & 0 & 1 & 0 \\
+        \tE & 0 & 0 & 0 & 0 & 1 & 0 & 0 & 1 \\
+      \end{block}
+    \end{blockarray}
+\end{displaymath}
+The labels $l_0, l_1, l_2$ refer to positions ($l$ for ``locations'')
+0, 1, 2 in the input sequence. In this example we have vocab size
+$v=5$ and input length $n=3$. For the first time in this document, the
+\emph{embedding dimension} (i.e.\ the width of $X$) is not equal to
+$v$. We introduce the notation $d$ for the embedding dimension. Here
+and in most of the remaining examples we have $d=v+n$.
+
+The remainder of this \emph{positional model} is the same as the
+minimal model with unembedding, except that we omit the mask
+matrix. The reason for this is that we want to keep our model as
+simple as possible, while understanding the effects of positional
+encoding. As we have already seen, masked attention does provide
+certain weak kinds of positional information such as whether one token
+precedes another token. Therefore, it is preferable to remove masking
+in our toy positional model.
+
+Hence the positional model is defined as follows:
+\begin{displaymath}
+\begin{aligned}
+A &= \sigma_\text{row}(X R\, X\Tr) \\
+X'&= A X U.  \\
+\end{aligned}
+\end{displaymath}
+The code for this positional model and the following experiment is
+available as \texttt{example3a()} of \texttt{example3\_model.py}.
+
+Using the above vocabulary, we consider a dataset of only four simple
+sequences, labeled \texttt{y} if there is an \texttt{a} at position~0,
+and \texttt{n} and otherwise:
+\begin{center}
+\begin{tabular}{cc}
+  \textbf{sequence} & \textbf{label} \\
+  \texttt{aaE} & \texttt{a} \\
+  \texttt{abE} & \texttt{a} \\
+  \texttt{baE} & \texttt{a} \\
+  \texttt{bbE} & \texttt{b} \\
+\end{tabular}
+\end{center}
+As a control scenario, we train a model that has no positional
+information but is otherwise identical to the positional model
+above. This is achieved by setting $X_\text{pos}$ to be identically
+zero. We find that after training, this model achieves 75\%
+accuracy. This is because it can correctly identify \texttt{aaE} and
+\texttt{bbE}---even if the tokens are presented in a random order,
+these sequences are unambiguously labeled \texttt{y} and \texttt{n}
+respectively. However, without positional information, the model must
+guess randomly the labels of the two sequences \texttt{abE} and
+\texttt{baE}. This accounts for the 75\% accuracy.
+
+Now we turn to the results of training the positional model
+\emph{with} positional information (i.e.\ $X_\text{pos}=I_3$). The
+model achieves perfect accuracy on the four sequences, and the trained
+parameters are as follows.
+\begin{displaymath}
+  \begin{aligned}
+  R &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \ty & \tn & \tE & l_0 & l_1 & l_2 \\
+      \begin{block}{r(cccccccc)}
+        \ta & -0.2 & 0.1 & 0.0 & -0.2 & -0.3 & -0.1 & 0.0 & 0.1 \\
+        \tb & -0.2 & 0.0 & 0.0 & 0.0 & -0.1 & -0.3 & 0.0 & 0.3 \\
+        \ty & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & -0.1 & -0.1 & 0.0 \\
+        \tn & 0.2 & -0.2 & -0.1 & 0.2 & 0.1 & 0.0 & -0.1 & -0.1 \\
+        \tE & \mathbf{2.1} & -2.0 & 0.1 & -0.2 & \mathbf{0.8} & \mathbf{1.2} & -2.8 & \mathbf{0.8} \\
+        l_0 & 0.1 & 0.0 & 0.0 & -0.1 & -0.2 & -0.2 & 0.2 & 0.0  \\
+        l_1 & -0.1 & 0.0 & 0.0 & 0.4 & 0.1 & 0.1 & 0.1 & 0.0 & \\
+        l_2 & \mathbf{2.3} & -2.0 & 0.1 & 0.0 & \mathbf{0.7} & \mathbf{1.2} & -2.7 & \mathbf{0.8} \\
+      \end{block}
+    \end{blockarray} \\
+    U &=
+  \begin{blockarray}{ccccccccc}
+       & \ta & \tb & \ty & \tn & \tE \\
+      \begin{block}{r(cccccccc)}
+        \ta & -2.0 & -1.5 & \mathbf{2.6} & -2.2 & -2.1 \\
+        \tb & -0.5 & -0.4 & -1.3 & 0.4 & -0.1 \\
+        \ty & 0.2 & -0.3 & 0.1 & -0.1 & 0.0 \\
+        \tn & -0.1 & 0.1 & -0.1 & 0.1 & 0.2 \\
+        \tE & -1.5 & -1.4 & -1.2 & \mathbf{3.1} & -1.9 \\
+        l_0 & -2.0 & -2.2 & \mathbf{3.4} & -1.7 & -2.2 \\
+        l_1 & -0.6 & -0.4 & -0.1 & 0.5 & -0.8 \\
+        l_2 & -1.5 & -1.5 & -0.9 & \mathbf{3.5} & -1.3 \\
+      \end{block}
+    \end{blockarray} \\    
+  \end{aligned}
+\end{displaymath}
+
+
+
+% attn_layers.attn_layers.0.R:
+% -0.2 & 0.1 & 0.0 & -0.2 & -0.3 & -0.1 & 0.0 & 0.1 \\
+% -0.2 & 0.0 & 0.0 & 0.0 & -0.1 & -0.3 & 0.0 & 0.3 \\
+% 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & -0.1 & -0.1 & 0.0 \\
+% 0.2 & -0.2 & -0.1 & 0.2 & 0.1 & 0.0 & -0.1 & -0.1 \\
+% 2.1 & -2.0 & 0.1 & -0.2 & 0.8 & 1.2 & -2.8 & 0.8 \\
+% 0.1 & 0.0 & 0.0 & -0.1 & -0.2 & -0.2 & 0.2 & 0.0  \\
+% -0.1 & 0.0 & 0.0 & 0.4 & 0.1 & 0.1 & 0.1 & 0.0 & \\
+% 2.3 & -2.0 & 0.1 & 0.0 & 0.7 & 1.2 & -2.7 & 0.8 \\
+% unembed.weight:
+% -2.0 & -0.5 & 0.2 & -0.1 & -1.5 & -2.0 & -0.6 & -1.5 \\
+% -1.5 & -0.4 & -0.3 & 0.1 & -1.4 & -2.2 & -0.4 & -1.5 \\
+% 2.6 & -1.3 & 0.1 & -0.1 & -1.2 & 3.4 & -0.1 & -0.9 \\
+% -2.2 & 0.4 & -0.1 & 0.1 & 3.1 & -1.7 & 0.5 & 3.5 \\
+% -2.1 & -0.1 & 0.0 & 0.2 & -1.9 & -2.2 & -0.8 & -1.3 \\
+
+
+
+
+
+
+
+
+
+
+
 
 
 \vfill
 
 \noindent \todo{Sections to include, in no particular order: residual stream;
-  separate $W_k$ and $W_q$; something that requires three layers;
-  lookup table; positional encoding}
+ separate $W_k$ and $W_q$; something that requires three layers;
+ lookup table; positional encoding}
 
 \end{document}
