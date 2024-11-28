@@ -33,14 +33,17 @@ class TestExample3(unittest.TestCase):
         for s in seqs:
             assert len(s) == ctx_window
 
-        num_layers = 1
-        use_mask = False
-        use_pos_enc = True
-        model = ex3.Example3(vocab_size=v, ctx_window=ctx_window, num_layers=num_layers,
-                             inverse_class_probs=None, init_with_zeros=False,
-                             use_mask=use_mask, use_pos_enc=use_pos_enc)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
-        # max_steps = 30
+        tp = ex3.TransformerParams()
+        tp.vocab_size = v
+        tp.ctx_window = ctx_window
+        tp.num_layers = 1
+        tp.use_mask = False
+        tp.use_pos_enc = True
+        tp.inverse_class_probs = None
+        tp.use_pos_enc = True
+        model = ex3.Example3(tp)
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=1e-2)        # max_steps = 30
         num_epochs = 3000
         print_freq = 1000
         # print(f"initial params:")
