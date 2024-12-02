@@ -46,8 +46,9 @@ class Inputs:
     def make_dataset(self, token_to_id, num_inputs, min_len, max_len, batch_size):
         seqs, labels = self.make_inputs(num_inputs, min_len, max_len)
         seqs, labels = convert_to_IDs(token_to_id, seqs, labels)
-        seqs = add_padding(
-            seqs, pad_idx=token_to_id['P'], padded_len=max_len, on_right=False)
+        if max_len > min_len:
+            seqs = add_padding(
+                seqs, pad_idx=token_to_id['P'], padded_len=max_len, on_right=False)
         dataset = Data(seqs, labels)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=batch_size)
@@ -99,6 +100,20 @@ class A_Before_B_inputs(Inputs):
         input_seq[a_loc] = 'a'
         input_seq[b_loc] = 'b'
         label = 'y' if a_loc < b_loc else 'n'
+        input_seq.append('E')  # seq always ends in E
+        return input_seq, label
+
+
+class A_AtPos0_inputs(Inputs):
+    def __init__(self, chars, seed):
+        super().__init__(chars, seed)
+
+    @override
+    def make_input(self, input_len):
+        assert 'a' in self.chars and 'a' in self.chars
+        input_seq = [self.rng.choice(['a', 'b'])
+                     for _ in range(input_len-1)]
+        label = 'y' if input_seq[0] == 'a' else 'n'
         input_seq.append('E')  # seq always ends in E
         return input_seq, label
 
@@ -524,6 +539,14 @@ def matrix_labels(vocab: list[str], ctx_window: int) -> list:
     return vocab + pos_strs
 
 
+def get_ctx_window(dataset: torch.utils.data.Dataset) -> int:
+    x, _ = dataset[0]
+    ctx_window = len(x)
+    for x, _ in dataset:
+        assert len(x) == ctx_window
+    return ctx_window
+
+
 def example3a():
     token_to_id = {'a': 0,
                    'b': 1,
@@ -582,8 +605,80 @@ def example3a():
     evaluate_input(model, 'baE', 'n', token_to_id)
 
 
+def example3b():
+    vocab = ['a', 'b', 'y', 'n', 'E']
+    token_to_id = dict()
+    for i, token in enumerate(vocab):
+        token_to_id[token] = i
+    id_to_token = dict(map(reversed, token_to_id.items()))
+    vocab_size = len(token_to_id)
+    chars = sorted(list(set(vocab) - {'E', 'P', 'y', 'n'}))
+
+    num_inputs_train = 100  # 10000
+    num_inputs_validate = 100  # 1000
+    min_len = 4
+    max_len = min_len
+    batch_size = 10  # 20
+
+    tp = TransformerParams()
+    abb = A_Before_B_inputs(chars, tp.seed)
+    dataset_train, dataloader_train = abb.make_dataset(
+        token_to_id, num_inputs_train, min_len, max_len, batch_size)
+    dataset_validate, _ = abb.make_dataset(
+        token_to_id, num_inputs_validate, min_len, max_len, batch_size)
+    labels = torch.tensor([y.item() for y in dataset_train.Y])
+    inverse_class_probs = calc_inverse_class_probs(
+        labels, num_classes=vocab_size)
+    print(f'inverse_class_probs {inverse_class_probs}')
+
+    ctx_window = get_ctx_window(dataset_train)
+
+    print('First few training instances:')
+    for i in range(10):
+        x, y = dataset_train[i]
+        x = ids_to_string(id_to_token, x)
+        y = ids_to_string(id_to_token, y.unsqueeze(0))
+        print(x, y)
+
+    # model = Example2(vocab_size, num_layers, inverse_class_probs)
+
+    tp.inverse_class_probs = inverse_class_probs
+    tp.vocab_size = vocab_size
+    tp.ctx_window = ctx_window
+    tp.num_layers = 3
+    tp.init_with_zeros = False
+    tp.use_mask = False
+    tp.use_pos_enc = True
+    tp.inverse_class_probs = None
+
+    learning_rate = 0.01
+    num_epochs = 1000
+    print_freq = 100
+
+    model = Example3(tp)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+    print(f"initial params:")
+    print_params(model, precision=2)
+
+    # x, y = dataset[0]
+    # evaluate_gradient(model, x, y)
+    # return
+
+    do_training(dataset_train, dataloader_train, model,
+                optimizer, num_epochs, print_freq)
+
+    print(f"final params:")
+    print_params(model, precision=1)
+    validate(model, dataset_validate, num_instances=5,
+             id_to_token=id_to_token, print_probs=True)
+    # tp.verbose = True
+    # evaluate_input(model, 'abE', 'y', token_to_id)
+    # evaluate_input(model, 'baE', 'n', token_to_id)
+
+
 def main():
-    example3a()
+    example3b()
     # visualize_matrix(torch.rand(3, 3), ['a', 'b', 'c'], 'abc')
 
 
