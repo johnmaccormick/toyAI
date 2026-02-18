@@ -245,7 +245,7 @@ $e^2\approx 7.4$ times stronger than the attention to the other tokens
 
 For most applications, it doesn't make sense for a token to attend to
 another token that occurs later in the sequence. Therefore, we apply
-to a mask to all elements above the main diagonal, replacing these
+a mask to all elements above the main diagonal, replacing these
 elements with $-\infty$. Formally, we define an $n \by n$
 \emph{mask matrix} $M^\text{mask}$ by $M^\text{mask}_{i,j}=-\infty$
 for $j>i$ and 0 otherwise. For $n=3$, we have
@@ -735,9 +735,8 @@ four instances in the validation set:
 \subsubsection*{Example 1c: Outputting tokens other than the most frequent}
 
 The minimal model is capable only of outputting frequent tokens
-(e.g. output \texttt{c} if \texttt{c} has a high frequency). If we
-want our transformer to output something other than the frequent token
-itself, we need to add to its architecture. Specifically, we add a
+(i.e., output \texttt{c} if \texttt{c} has a frequency higher than some threshold). If we
+want our transformer to output something other than the token whose frequency is assessed, we need to add to its architecture. Specifically, we add a
 $v \by v$ \emph{unembedding matrix} $U$. The attention matrix $A$ is calculated as for the minimal model: 
 $A = \sigma_\text{row}(X R\, X\Tr + M^\text{mask})$. But the output embedding $X'$ is now given by
 \begin{displaymath}
@@ -1039,10 +1038,10 @@ and \texttt{n} and otherwise:
 \begin{center}
 \begin{tabular}{cc}
   \textbf{sequence} & \textbf{label} \\
-  \texttt{aaE} & \texttt{a} \\
-  \texttt{abE} & \texttt{a} \\
-  \texttt{baE} & \texttt{a} \\
-  \texttt{bbE} & \texttt{b} \\
+  \texttt{aaE} & \texttt{y} \\
+  \texttt{abE} & \texttt{y} \\
+  \texttt{baE} & \texttt{n} \\
+  \texttt{bbE} & \texttt{n} \\
 \end{tabular}
 \end{center}
 As a control scenario, we train a model that has no positional
