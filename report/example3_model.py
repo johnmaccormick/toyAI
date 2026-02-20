@@ -21,6 +21,7 @@ class TransformerParams:
         self.verbose = False
 
 
+
 class Inputs:
     def __init__(self, chars, seed):
         self.rng = np.random.default_rng(seed=seed)
@@ -30,8 +31,9 @@ class Inputs:
         print(f'self.probs {self.probs}')
 
     def make_input(self, input_len: int) -> tuple[list[str], str]:
+        """Return one generated input token sequence and its label."""
         assert False, 'Abstract method; not implemented'
-        # return input_seq, label
+        return [], ""
 
     def make_inputs(self, num_inputs, min_len, max_len) -> tuple[list[list[str]], list[str]]:
         inputs = []
@@ -63,6 +65,7 @@ class Simple_Freq_inputs(Inputs):
     @override
     def make_input(self, input_len):
         done = False  # disallow ties for most frequent
+        most_freq = None
         while not done:
             # use input_len-1 because E is appended later
             input_seq = [self.rng.choice(self.chars, p=self.probs)
@@ -679,7 +682,7 @@ def example3b():
 
 def main():
     example3b()
-    # visualize_matrix(torch.rand(3, 3), ['a', 'b', 'c'], 'abc')
+    visualize_matrix(torch.rand(3, 3), ['a', 'b', 'c'], 'abc')
 
 
 if __name__ == "__main__":
