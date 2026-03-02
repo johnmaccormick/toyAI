@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as torchfunc
 
+OUTFILE = 'results/example3-model.pth'
 
 class TransformerParams:
     def __init__(self):
@@ -17,9 +18,9 @@ class TransformerParams:
         self.init_with_zeros = False
         self.use_mask = True
         self.use_pos_enc = False
-        self.inverse_class_probs = None
+        self.inverse_class_probs : None | torch.Tensor = None
         self.verbose = False
-
+        self.vocab = []
 
 
 class Inputs:
@@ -183,7 +184,7 @@ class RelationAttn(nn.Module):
         return enc_prime
 
     def make_mask(self, n_val):
-        infinity = 1e-9
+        infinity = 1e9
         lower_tri = torch.tril(torch.ones(n_val, n_val))
         upper_tri_bool = (lower_tri == 0)
         zeros = torch.zeros(n_val, n_val)
@@ -282,25 +283,36 @@ class Example3(nn.Module):
 
         return logits
 
-    def visualize(self, vocab):
-        if self.use_pos_enc:
+    def visualize(self, vocab = []):
+        if vocab == []:
+            vocab = self.tp.vocab
+        if self.tp.use_pos_enc:
             mat_labels = matrix_labels(vocab, self.tp.ctx_window)
         else:
             mat_labels = vocab
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        fig, axes = plt.subplots(1, 3, figsize=(10, 5))
 
         R_matrix = self.attn_layers.attn_layers[0].R.data
-        title = 'R'
+        title = 'R0'
         visualize_matrix(R_matrix, mat_labels, mat_labels,
-                         title, log_scale=True, ax=axes[0])
+                         title, log_scale=True, ax=axes[0], show=False)
+        
+        R1e_matrix = self.attn_layers.attn_layers[1].R.data[4:5, :]
+        title = 'R1E'
+        visualize_matrix(R1e_matrix, ['E'], mat_labels,
+                         title, log_scale=True, ax=axes[1], show=False)
 
         U_matrix = self.unembed.weight.data.transpose(dim0=0, dim1=1)
         title = 'U'
         visualize_matrix(U_matrix, mat_labels, vocab,
-                         title, log_scale=False, ax=axes[1])
+                         title, log_scale=False, ax=axes[2], show=False)
         fig.tight_layout()
         plt.show()
+        # print("Click anywhere in the plot window to continue...")
+        # plt.waitforbuttonpress() 
+        # print("You clicked! Moving on...")
+        # plt.close()
 
 
 def maybe_print_tensor(tp: TransformerParams, name: str, t: torch.Tensor):
@@ -310,15 +322,20 @@ def maybe_print_tensor(tp: TransformerParams, name: str, t: torch.Tensor):
 
 def visualize_matrix(matrix: torch.Tensor, row_labels: list[str],
                      col_labels: list[str], title: str,
-                     log_scale: bool, ax):
+                     log_scale = False, ax=None, show=True):
     # based on version written by Colab AI
 
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.figure
+
     data = matrix.detach().numpy()
-    # fig, ax = plt.subplots()
     if log_scale:
         img_data = np.exp(data)
     else:
         img_data = data
+
 
     im = ax.imshow(img_data, cmap='viridis')  # Choose a colormap
 
@@ -333,8 +350,9 @@ def visualize_matrix(matrix: torch.Tensor, row_labels: list[str],
                            ha="center", va="center", color="w")
 
     ax.set_title(title)
-    # fig.tight_layout()
-    # plt.show()
+    fig.tight_layout()
+    if show:
+        plt.show()
 
 
 def convert_to_IDs(token_to_id, seqs, labels):
@@ -608,7 +626,7 @@ def example3a():
     evaluate_input(model, 'baE', 'n', token_to_id)
 
 
-def example3b():
+def example3b(load_from_file: bool) -> Example3:
     vocab = ['a', 'b', 'y', 'n', 'E']
     token_to_id = dict()
     for i, token in enumerate(vocab):
@@ -645,7 +663,6 @@ def example3b():
 
     # model = Example2(vocab_size, num_layers, inverse_class_probs)
 
-    tp.inverse_class_probs = inverse_class_probs
     tp.vocab_size = vocab_size
     tp.ctx_window = ctx_window
     tp.num_layers = 3
@@ -653,6 +670,8 @@ def example3b():
     tp.use_mask = False
     tp.use_pos_enc = True
     tp.inverse_class_probs = None
+    # tp.inverse_class_probs = inverse_class_probs
+    tp.vocab = vocab
 
     learning_rate = 0.01
     num_epochs = 1000
@@ -668,8 +687,12 @@ def example3b():
     # evaluate_gradient(model, x, y)
     # return
 
-    do_training(dataset_train, dataloader_train, model,
-                optimizer, num_epochs, print_freq)
+    if load_from_file:
+        model.load_state_dict(torch.load(OUTFILE))
+        print(f"loaded params from {OUTFILE}")
+    else:
+        do_training(dataset_train, dataloader_train, model,
+                    optimizer, num_epochs, print_freq)
 
     print(f"final params:")
     print_params(model, precision=1)
@@ -679,10 +702,21 @@ def example3b():
     # evaluate_input(model, 'abE', 'y', token_to_id)
     # evaluate_input(model, 'baE', 'n', token_to_id)
 
+    if not load_from_file:
+        torch.save(model.state_dict(), OUTFILE)
+        print(f"saved params to {OUTFILE}")
+    
+    return model
 
 def main():
-    example3b()
-    visualize_matrix(torch.rand(3, 3), ['a', 'b', 'c'], 'abc')
+    model = example3b(load_from_file=True)
+    # visualize_matrix(torch.rand(3, 3), ['a', 'b', 'c'], ['a', 'b', 'c'], 
+                    #  'abc')
+    model.visualize()
+    
+
+
+
 
 
 if __name__ == "__main__":

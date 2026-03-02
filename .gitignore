@@ -9,6 +9,8 @@ syn-model.pth
 freq-model.pth
 b-before-c-model.pth
 manual-b-bef-c.txt
+*.pth
+*.pt
 *~
 
 
