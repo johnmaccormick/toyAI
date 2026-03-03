@@ -99,8 +99,9 @@ follows:
     \end{blockarray}
 \end{displaymath}
 
-\todo{More notation, such as
-  $X_{03}, X_{\tE 2}, X_{2,:}, X_{:,-1}, X_{\tE,:}$}
+We refer to rows and columns with Python-like indices: they are zero-based, $-n$ is $n$th from the end, and a colon ``:'' represents a whole row or column. This produces notation such as 
+$X_{03}$ for the element at zero-based location $(0,3)$, $X_{2,:}$ for row~2 (zero-based), and $X_{:,-1}$ for the last column. We sometimes index rows and columns with corresponding tokens or other labels, such as positional labels introduced later. In the definition of $X$ above, for example, we have  $X_{2 \tE}=X_{2 2}, X_{:,\tE}=X_{2,:}$
+
 
 In our toy system, the amount of attention between ordered pairs of
 tokens is specified by a $v \by v$ \emph{relationship matrix}
