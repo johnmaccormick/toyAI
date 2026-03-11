@@ -99,8 +99,8 @@ follows:
     \end{blockarray}
 \end{displaymath}
 
-We refer to rows and columns with Python-like indices: they are zero-based, $-n$ is $n$th from the end, and a colon ``:'' represents a whole row or column. This produces notation such as 
-$X_{03}$ for the element at zero-based location $(0,3)$, $X_{2,:}$ for row~2 (zero-based), and $X_{:,-1}$ for the last column. We sometimes index rows and columns with corresponding tokens or other labels, such as positional labels introduced later. In the definition of $X$ above, for example, we have  $X_{2 \tE}=X_{2 2}, X_{:,\tE}=X_{2,:}$
+We refer to rows and columns with Python-like indices: they are zero-based, $-n$ is $n$th from the end, and a colon ``:'' represents a whole row or column. This produces notation such as: 
+$X_{03}$ for the element at zero-based location $(0,3)$; $X_{2,:}$ for row~2 (zero-based); and $X_{:,-1}$ for the last column. We sometimes index rows and columns with corresponding tokens or other labels, such as positional labels introduced later. In the definition of $X$ above, for example, we have  $X_{2 \tE}=X_{2 2}$ and $X_{:,\tE}=X_{2,:}$.
 
 
 In our toy system, the amount of attention between ordered pairs of
@@ -117,7 +117,8 @@ The relationship matrix $R$ has the following properties:
   $R_{ij}=-\infty$ implies zero attention from $i$ to $j$; any finite
   value of $R_{ij}$ (including negative or zero) implies nonzero
   attention; adding a fixed increment to $R_{ij}$ increases the
-  implied attention by a multiplicative factor.
+  implied attention by a multiplicative factor, relative to other entries in the same row. 
+\item The final token probabilities computed by the model are invariant to changing any row of $R$ by an additive constant. 
 \end{itemize}
 The logarithmic units are due to the fact that a softmax function will
 be applied later, during the attention computation. The softmax
