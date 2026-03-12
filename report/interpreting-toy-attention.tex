@@ -22,7 +22,7 @@
 \newcommand{\sR}{\mathbb{R}}
 \newcommand{\cL}{\mathcal{L}}
 \newcommand{\dLdR}{\frac{\partial L}{\partial R}}
-\newcommand{\Tr}{^{\intercal}} % transpose
+\newcommand{\Tr}{^{\top}} % transpose
 \newcommand{\by}{\times}
 
 
@@ -106,7 +106,7 @@ $X_{03}$ for the element at zero-based location $(0,3)$; $X_{2,:}$ for row~2 (ze
 In our toy system, the amount of attention between ordered pairs of
 tokens is specified by a $v \by v$ \emph{relationship matrix}
 $R$. (Most authors do not define $R$ directly, instead deriving it
-from query and key matrices $W_q, W_k$. We will incorporate query and
+from query and key matrices $W_q, W_k$ via $R=W_q W_k\Tr$. We will incorporate query and
 key matrices in our framework below, but the simplest toy model is
 best defined in terms of $R$ directly.)
 
@@ -118,14 +118,13 @@ The relationship matrix $R$ has the following properties:
   value of $R_{ij}$ (including negative or zero) implies nonzero
   attention; adding a fixed increment to $R_{ij}$ increases the
   implied attention by a multiplicative factor, relative to other entries in the same row. 
-\item The final token probabilities computed by the model are invariant to changing any row of $R$ by an additive constant. 
+\item The final token probabilities computed by the model are invariant to changing any row of $R$ by an additive constant. (This is due to the row-wise softmax function mentioned below.\footnote{See also the accompanying empirical verification in \texttt{r\_invariance.py}.})
 \end{itemize}
 The logarithmic units are due to the fact that a softmax function will
 be applied later, during the attention computation. The softmax
 function involves exponentiation, which will transform $-\infty$ to 0
 and any finite value (including negative or zero) to a positive
-value. \todo{Mention 0=moderate/intermediate. And rows invariant to
-  additive constants}
+value. In this document, we mostly present rows of $R$ normalized by an additive constant so that positive values represent significant attention and zero corresponds to a low or medium level of attention.
 
 Here is an example of a possible relationship matrix for the
 vocabulary $\bV$ given above: 
@@ -607,8 +606,7 @@ normalized, in the final row of $A$. When this final row is
 post-multiplied by $X$ to produce $X'$, the copies corresponding to
 each token are collected together, producing output probabilities
 proportional to $(n_0 e^{r_0}, n_1 e^{r_1}, \ldots)$. Hence, the
-output token ID is $\argmax_i n_i e^{r_i}$. \todo{Improve explanation
-  by making it clearer and adding example.}
+output token ID is $\argmax_i n_i e^{r_i}$. \todo{Perhaps add an example.}
 
 
 \subsubsection*{The minimal model can select the most frequent token}
@@ -691,8 +689,8 @@ model that detects the most frequent token in the input. We'll use a
 larger vocabulary: $\{\ta, \tb, \tc, \td, \te, \tf, \tE, \tP\}$. Input
 sequences will consist of 4--10 tokens drawn uniformly at random from
 \texttt{a}--\texttt{f}, terminated by \texttt{E}. Sequences are padded
-on the left \todo{explain why the left} with \texttt{P} tokens, so
-that all inputs are exactly 11 tokens in length. Sequences with a tie
+on the left with \texttt{P} tokens, so
+that all inputs are exactly 11 tokens in length, and the final \texttt{E} is always token~9. Sequences with a tie
 for most frequent token are not permitted. Complete code for this
 example is available as \texttt{example1b()} of
 \texttt{example1\_model.py}. The first few examples of the training
@@ -751,7 +749,7 @@ the encoding $AX$ (which, as previously discussed, can be thought of
 as a linear combination of input tokens) into a different linear
 combination of input tokens. An interesting special case
 is that $U$ could be a permutation matrix mapping each token to a
-different token.
+different token. Because output probabilities are computed via a row-wise softmax after multiplying on the right by $U$, the $U$ matrix shares certain properties with the $R$ matrix: Its rows can be altered by (different) additive constants without changing the results, and the values represent a logarithmic scale.
 
 Let's now examine an example in which $U$ is an arbitrary matrix
 learned from training data.  Our vocabulary will be
@@ -792,23 +790,30 @@ validation accuracy with the following parameters:
   \begin{blockarray}{ccccccccc}
        & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
       \begin{block}{r(cccccccc)}
-        \ta & -28.84 & -12.81 & -12.03 & -12.04 & 0.15 & 0.11 & -1.27 & -3.52   \\
-        \tb & -28.32 & -13.12 & -12.73 & -12.24 & 0.17 & 0.18 & -1.08 & -3.69   \\
-        \tc & -28.49 & -13.14 & -12.35 & -12.28 & 0.05 & 0.09 & -1.38 & -3.33   \\
-        \td & -28.34 & -13.29 & -12.56 & -12.25 & -0.04 & -0.06 & -1.30 & -3.44   \\
-        \ty & \mathbf{16.00} & \mathbf{-11.25} & \mathbf{-12.49} & \mathbf{-12.62} & -0.32 & -0.16 & 0.05 & -18.43   \\
-        \tn & \mathbf{-14.61} & \mathbf{15.44} & \mathbf{17.17} & \mathbf{16.77} & -0.05 & -0.20 & 1.54 & 21.31   \\
-        \tE & -29.00 & -12.75 & -11.88 & -11.75 & -0.21 & 0.27 & -1.11 & -3.98   \\
-        \tP & -29.01 & -12.63 & -12.14 & -11.63 & -0.12 & 0.27 & -1.24 & -3.9  \\
+        % \ta & -28.84 & -12.81 & -12.03 & -12.04 & 0.15 & 0.11 & -1.27 & -3.52   \\
+        % \tb & -28.32 & -13.12 & -12.73 & -12.24 & 0.17 & 0.18 & -1.08 & -3.69   \\
+        % \tc & -28.49 & -13.14 & -12.35 & -12.28 & 0.05 & 0.09 & -1.38 & -3.33   \\
+        % \td & -28.34 & -13.29 & -12.56 & -12.25 & -0.04 & -0.06 & -1.30 & -3.44   \\
+        % \ty & \mathbf{16.00} & \mathbf{-11.25} & \mathbf{-12.49} & \mathbf{-12.62} & -0.32 & -0.16 & 0.05 & -18.43   \\
+        % \tn & \mathbf{-14.61} & \mathbf{15.44} & \mathbf{17.17} & \mathbf{16.77} & -0.05 & -0.20 & 1.54 & 21.31   \\
+        % \tE & -29.00 & -12.75 & -11.88 & -11.75 & -0.21 & 0.27 & -1.11 & -3.98   \\
+        % \tP & -29.01 & -12.63 & -12.14 & -11.63 & -0.12 & 0.27 & -1.24 & -3.9  \\
+%%%%%%%%%%% above transposed:        
+        \ta & -28.84 & -28.32 & -28.49 & -28.34 & \mathbf{16.00} & \mathbf{-14.61} & -29.00 & -29.01 \\
+        \tb & -12.81 & -13.12 & -13.14 & -13.29 & \mathbf{-11.25} & \mathbf{15.44} & -12.75 & -12.63 \\
+        \tc & -12.03 & -12.73 & -12.35 & -12.56 & \mathbf{-12.49} & \mathbf{17.17} & -11.88 & -12.14 \\
+        \td & -12.04 & -12.24 & -12.28 & -12.25 & \mathbf{-12.62} & \mathbf{16.77} & -11.75 & -11.63 \\
+        \ty & 0.15 & 0.17 & 0.05 & -0.04 & -0.32 & -0.05 & -0.21 & -0.12 \\
+        \tn & 0.11 & 0.18 & 0.09 & -0.06 & -0.16 & -0.20 & 0.27 & 0.27 \\
+        \tE & -1.27 & -1.08 & -1.38 & -1.30 & 0.05 & 1.54 & -1.11 & -1.24 \\
+        \tP & -3.52 & -3.69 & -3.33 & -3.44 & -18.43 & 21.31 & -3.98 & -3.9 \\
       \end{block}
     \end{blockarray} \\    
   \end{aligned}
 \end{displaymath}
-\todo{transpose above U}
-\todo{add interpretation of the above}
+We can interpret this as follows. The final row of $X'$ reflects the frequencies of the input tokens. In particular, $X'_{-1,0}=X'_{-1,a}$ represents the frequency of token $a$ in the input. Because $U_{a,y}$ is large compared to other elements in the same row (16.00 is positive, all others are negative), a high frequency for $a$ will translate to a strong probability for output token $y$. The large values of $U_{b,n},U_{c,n},U_{d,n}$ (relative to others in the same row) result in a high output probability for $n$ whenever $b$, $c$, or $d$ is the most frequent input.
 
-Here are the output probabilities for the first
-five instances in the validation set:
+Let's observe this in our concrete example. Here are the output probabilities for the first five instances in the validation set:
 \begin{center}
 \begin{tabular}{cccccccccc}
   \textbf{sequence} & \textbf{label} & \multicolumn{8}{c}{\textbf{output probabilities}} \\
@@ -874,19 +879,26 @@ one-layer model's 98\%. The parameters at convergence are as follows
   \begin{blockarray}{ccccccccc}
        & \ta & \tb & \tc & \td & \ty & \tn & \tE & \tP  \\
       \begin{block}{r(cccccccc)}
-        \ta & -7.2 & -6.3 & -6.3 & -6.5 & -0.1 & 0.0  & -5.5 & -1.4 \\
-        \tb & -7.1 & -6.5 & -6.3 & -6.4 &  0.1 & -0.3 & -5.  & -1.1 \\
-        \tc & -7.2 & -6.3 & -6.3 & -6.7 &  0.2 &  0.1 & -5.2 & -0.9 \\
-        \td & -7.1 & -6.4 & -6.1 & -6.4 & -0.1 &  0.3 & -5.1 & -0.7 \\
-        \ty & \mathbf{10.6} & -8.6 & -6.4 & -7.  &  0.2 & -0.3 & -2.2 &  0.5 \\
-        \tn & -7.9 & \mathbf{11.1} &  \mathbf{9.6} &  \mathbf{9.9} &  0.0  & 0.0  &  \mathbf{6.3} &  1.0  \\
-        \tE & -7.3 & -6.5 & -6.5 & -6.5 &  0.2 &  0.3 & -5.2 & -0.8 \\
-        \tP & -7.4 & -6.6 & -6.5 & -6.7 & -0.1 &  0.1 & -5.1 & -1.0 \\
-      \end{block}
+        % \ta & -7.2 & -6.3 & -6.3 & -6.5 & -0.1 & 0.0  & -5.5 & -1.4 \\
+        % \tb & -7.1 & -6.5 & -6.3 & -6.4 &  0.1 & -0.3 & -5.  & -1.1 \\
+        % \tc & -7.2 & -6.3 & -6.3 & -6.7 &  0.2 &  0.1 & -5.2 & -0.9 \\
+        % \td & -7.1 & -6.4 & -6.1 & -6.4 & -0.1 &  0.3 & -5.1 & -0.7 \\
+        % \ty & \mathbf{10.6} & -8.6 & -6.4 & -7.  &  0.2 & -0.3 & -2.2 &  0.5 \\
+        % \tn & -7.9 & \mathbf{11.1} &  \mathbf{9.6} &  \mathbf{9.9} &  0.0  & 0.0  &  \mathbf{6.3} &  1.0  \\
+        % \tE & -7.3 & -6.5 & -6.5 & -6.5 &  0.2 &  0.3 & -5.2 & -0.8 \\
+        % \tP & -7.4 & -6.6 & -6.5 & -6.7 & -0.1 &  0.1 & -5.1 & -1.0 \\
+%%%%%%%%%%% above transposed:        
+        \ta & -7.2 & -7.1 & -7.2 & -7.1 & \mathbf{10.6} & -7.9 & -7.3 & -7.4 \\
+        \tb & -6.3 & -6.5 & -6.3 & -6.4 & -8.6 & \mathbf{11.1} & -6.5 & -6.6 \\
+        \tc & -6.3 & -6.3 & -6.3 & -6.1 & -6.4 & \mathbf{9.6} & -6.5 & -6.5 \\
+        \td & -6.5 & -6.4 & -6.7 & -6.4 & -7. & \mathbf{9.9} & -6.5 & -6.7 \\
+        \ty & -0.1 & 0.1 & 0.2 & -0.1 & 0.2 & 0.0 & 0.2 & -0.1 \\
+        \tn & 0.0 & -0.3 & 0.1 & 0.3 & -0.3 & 0.0 & 0.3 & 0.1 \\
+        \tE & -5.5 & -5. & -5.2 & -5.1 & -2.2 & \mathbf{6.3} & -5.2 & -5.1 \\
+        \tP & -1.4 & -1.1 & -0.9 & -0.7 & 0.5 & 1.0 & -0.8 & -1.0 \\      \end{block}
     \end{blockarray} \\    
   \end{aligned}
 \end{displaymath}
-\todo{transpose above U}
 \todo{discuss and interpret these results}
 
 \subsubsection*{Multiple attention layers required: \texttt{a} before \texttt{b}}
